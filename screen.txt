@@ -1,0 +1,215 @@
+# ================================
+# SIMPLE SCREENSHOT TO TELEGRAM BOT
+# ================================
+
+# Configuration - CHANGE THESE!
+$BotToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"  # Get from @BotFather
+$ChatID = "2146236602"      # Your Telegram chat ID
+
+# ================================
+# Function to capture screenshot
+# ================================
+function Take-Screenshot {
+    # Create screenshots folder if it doesn't exist
+    $screenshotFolder = "$env:USERPROFILE\Screenshots"
+    if (-not (Test-Path $screenshotFolder)) {
+        New-Item -ItemType Directory -Path $screenshotFolder -Force | Out-Null
+    }
+    
+    # Create filename with timestamp
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $screenshotPath = "$screenshotFolder\screenshot_$timestamp.png"
+    
+    # Take screenshot using .NET
+    Add-Type -AssemblyName System.Windows.Forms
+    Add-Type -AssemblyName System.Drawing
+    
+    $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
+    $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
+    $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
+    $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
+    
+    # Save the screenshot
+    $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
+    $graphics.Dispose()
+    $bitmap.Dispose()
+    
+    return $screenshotPath
+}
+
+# ================================
+# Function to send to Telegram
+# ================================
+function Send-ToTelegram {
+    param(
+        [string]$FilePath,
+        [string]$Caption = "Screenshot captured $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+    )
+    
+    try {
+        # Send photo to Telegram
+        $url = "https://api.telegram.org/bot$BotToken/sendPhoto"
+        
+        # Prepare multipart form data
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+        $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+        
+        $body = @"
+--$boundary
+Content-Disposition: form-data; name="chat_id"
+
+$ChatID
+--$boundary
+Content-Disposition: form-data; name="caption"
+
+$Caption
+--$boundary
+Content-Disposition: form-data; name="photo"; filename="$(Split-Path $FilePath -Leaf)"
+Content-Type: image/png
+
+$fileEnc
+--$boundary--
+"@
+        
+        # Send request
+        $response = Invoke-RestMethod -Uri $url -Method Post `
+            -ContentType "multipart/form-data; boundary=$boundary" `
+            -Body ([System.Text.Encoding]::UTF8.GetBytes($body))
+        
+        Write-Host "✅ Screenshot sent successfully to Telegram!" -ForegroundColor Green
+        Write-Host "   Message ID: $($response.result.message_id)" -ForegroundColor Cyan
+        
+        return $true
+    }
+    catch {
+        Write-Host "❌ Failed to send to Telegram: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# ================================
+# Function to get chat updates
+# ================================
+function Get-TelegramUpdates {
+    try {
+        $url = "https://api.telegram.org/bot$BotToken/getUpdates"
+        $response = Invoke-RestMethod -Uri $url
+        
+        if ($response.ok -and $response.result.Count -gt 0) {
+            Write-Host "📱 Recent messages from Telegram:" -ForegroundColor Cyan
+            foreach ($update in $response.result) {
+                $chatId = $update.message.chat.id
+                $user = $update.message.from.username
+                $text = $update.message.text
+                Write-Host "   Chat ID: $chatId | User: @$user | Message: $text" -ForegroundColor Gray
+            }
+        }
+    }
+    catch {
+        Write-Host "⚠️  Could not fetch updates: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+# ================================
+# Function to test bot connection
+# ================================
+function Test-BotConnection {
+    try {
+        $url = "https://api.telegram.org/bot$BotToken/getMe"
+        $response = Invoke-RestMethod -Uri $url
+        
+        if ($response.ok) {
+            Write-Host "✅ Bot connection successful!" -ForegroundColor Green
+            Write-Host "   Bot: @$($response.result.username)" -ForegroundColor Cyan
+            Write-Host "   Name: $($response.result.first_name)" -ForegroundColor Cyan
+            return $true
+        }
+    }
+    catch {
+        Write-Host "❌ Bot connection failed!" -ForegroundColor Red
+        Write-Host "   Error: $($_.Exception.Message)" -ForegroundColor Red
+        Write-Host "   Please check your Bot Token" -ForegroundColor Yellow
+        return $false
+    }
+}
+
+# ================================
+# MAIN EXECUTION
+# ================================
+Clear-Host
+Write-Host "===================================" -ForegroundColor Cyan
+Write-Host "    SCREENSHOT TO TELEGRAM BOT     " -ForegroundColor Cyan
+Write-Host "===================================" -ForegroundColor Cyan
+
+# Check configuration
+if ($BotToken -eq "YOUR_BOT_TOKEN_HERE" -or $ChatID -eq "YOUR_CHAT_ID_HERE") {
+    Write-Host "⚠️  WARNING: Please configure BotToken and ChatID first!" -ForegroundColor Yellow
+    Write-Host ""
+    Write-Host "How to get these values:" -ForegroundColor White
+    Write-Host "1. Create bot with @BotFather on Telegram" -ForegroundColor Gray
+    Write-Host "2. Copy the bot token" -ForegroundColor Gray
+    Write-Host "3. Send /start to your bot" -ForegroundColor Gray
+    Write-Host "4. Get updates to find your chat ID" -ForegroundColor Gray
+    Write-Host ""
+    
+    # Ask user to input values
+    $BotToken = Read-Host "Enter Bot Token (or press Enter to skip)"
+    $ChatID = Read-Host "Enter Chat ID (or press Enter to skip)"
+    
+    if ([string]::IsNullOrWhiteSpace($BotToken) -or [string]::IsNullOrWhiteSpace($ChatID)) {
+        Write-Host "❌ Configuration incomplete. Exiting." -ForegroundColor Red
+        exit
+    }
+}
+
+# Test bot connection
+Write-Host ""
+Write-Host "Testing bot connection..." -ForegroundColor Yellow
+if (-not (Test-BotConnection)) {
+    exit
+}
+
+# Show recent messages (optional)
+Write-Host ""
+$showUpdates = Read-Host "Show recent Telegram messages? (y/n)"
+if ($showUpdates -eq "y" -or $showUpdates -eq "Y") {
+    Get-TelegramUpdates
+}
+
+# Take screenshot
+Write-Host ""
+Write-Host "Taking screenshot..." -ForegroundColor Yellow
+$screenshotPath = Take-Screenshot
+Write-Host "✅ Screenshot saved to: $screenshotPath" -ForegroundColor Green
+
+# Get file info
+$fileSize = (Get-Item $screenshotPath).Length / 1MB
+Write-Host "   File size: $($fileSize.ToString('0.00')) MB" -ForegroundColor Cyan
+
+# Send to Telegram
+Write-Host ""
+Write-Host "Sending to Telegram..." -ForegroundColor Yellow
+$result = Send-ToTelegram -FilePath $screenshotPath
+
+# Optional: Ask to delete local file
+if ($result) {
+    Write-Host ""
+    $deleteFile = Read-Host "Delete local screenshot file? (y/n)"
+    if ($deleteFile -eq "y" -or $deleteFile -eq "Y") {
+        Remove-Item $screenshotPath -Force
+        Write-Host "🗑️  Local file deleted" -ForegroundColor Green
+    }
+}
+
+# Optional: Open screenshot folder
+Write-Host ""
+$openFolder = Read-Host "Open screenshots folder? (y/n)"
+if ($openFolder -eq "y" -or $openFolder -eq "Y") {
+    explorer "$env:USERPROFILE\Screenshots"
+}
+
+Write-Host ""
+Write-Host "===================================" -ForegroundColor Cyan
+Write-Host "           COMPLETE!               " -ForegroundColor Cyan
+Write-Host "===================================" -ForegroundColor Cyan
