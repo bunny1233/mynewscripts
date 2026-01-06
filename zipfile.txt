@@ -1,7 +1,9 @@
 # ========================================
 #            CONFIGURATION
 # ========================================
-# UPDATE THESE BEFORE UPLOADING TO GITHUB
+# FORCE TLS 1.2 (Fixes "API Down" errors)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
 $BotToken       = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
 $ChatId         = "2146236602"
 
@@ -20,8 +22,7 @@ try {
     Write-Host "      Zip created successfully." -ForegroundColor Green
 }
 catch {
-    Write-Host "[-] ZIP creation failed: $_" -ForegroundColor Red
-    # PAUSE HERE INSTEAD OF EXITING
+    Write-Host "[-] ZIP creation failed: $($_.Exception.Message)" -ForegroundColor Red
     Read-Host "Press Enter to stop..."
     return
 }
@@ -29,12 +30,14 @@ catch {
 # 2. GET GOFILE SERVER
 Write-Host "[2/4] Getting GoFile server..." -ForegroundColor Cyan
 try {
-    $serverInfo = Invoke-RestMethod "https://api.gofile.io/getServer" -ErrorAction Stop
+    # Added UserAgent to avoid being blocked as a bot
+    $serverInfo = Invoke-RestMethod "https://api.gofile.io/getServer" -UserAgent "Mozilla/5.0" -ErrorAction Stop
     $server = $serverInfo.data.server
     if (-not $server) { throw "Server data is empty" }
 }
 catch {
-    Write-Host "[-] Failed to get GoFile server. API might be down." -ForegroundColor Red
+    # Print the ACTUAL error message
+    Write-Host "[-] Failed to get GoFile server: $($_.Exception.Message)" -ForegroundColor Red
     Read-Host "Press Enter to stop..."
     return
 }
@@ -83,9 +86,8 @@ try {
     Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue
 }
 catch {
-    Write-Host "[-] Failed to send Telegram message: $_" -ForegroundColor Red
+    Write-Host "[-] Failed to send Telegram message: $($_.Exception.Message)" -ForegroundColor Red
 }
 
 Write-Host "`n[✓] All Done." -ForegroundColor Green
-# FINAL PAUSE SO YOU CAN SEE THE RESULT
 Read-Host "Press Enter to close..."
