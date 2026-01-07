@@ -1,94 +1,47 @@
-# =========================================================
-# WINDOWS DEFENDER REAL-TIME PROTECTION DISABLER
-# =========================================================
+# Windows Defender Real-Time Protection Disabler
+# Simple and Clean Version
 
-Write-Host "Windows Defender Real-Time Protection Control" -ForegroundColor Cyan
-Write-Host "=============================================" -ForegroundColor Cyan
-
-# Check if running as administrator
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-
-if (-not $isAdmin) {
-    Write-Host "[-] This script requires ADMINISTRATOR privileges!" -ForegroundColor Red
-    Write-Host "[*] Attempting to restart with admin rights..." -ForegroundColor Yellow
-    
-    # Restart script with admin privileges
-    $scriptPath = $MyInvocation.MyCommand.Path
-    Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -NoProfile -File `"$scriptPath`"" -Verb RunAs
+# Request admin rights if not already admin
+if (-NOT ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole] "Administrator")) {
+    echo "Requesting administrator rights..."
+    Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$PSCommandPath`"" -Verb RunAs
     exit
 }
 
-Write-Host "[✓] Running as Administrator" -ForegroundColor Green
+echo "========================================"
+echo "  Windows Defender Control Tool"
+echo "========================================"
+echo ""
 
-# Check current Defender status
-try {
-    Write-Host "`n[*] Checking current Windows Defender status..." -ForegroundColor Yellow
-    $defenderStatus = Get-MpComputerStatus
-    
-    Write-Host "Current Status:" -ForegroundColor Cyan
-    Write-Host "• Real-time protection: $($defenderStatus.RealtimeProtectionEnabled)" -ForegroundColor Gray
-    Write-Host "• Antivirus enabled: $($defenderStatus.AntivirusEnabled)" -ForegroundColor Gray
-    Write-Host "• Quick scan age: $($defenderStatus.QuickScanAge) days" -ForegroundColor Gray
-    Write-Host "• Full scan age: $($defenderStatus.FullScanAge) days" -ForegroundColor Gray
-} catch {
-    Write-Host "[!] Could not get Windows Defender status: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
+# Check current status
+echo "Checking current Defender status..."
+$status = Get-MpComputerStatus
+echo "Real-time protection: $($status.RealtimeProtectionEnabled)"
+echo ""
+
+# Turn OFF Defender
+echo "Disabling Windows Defender real-time protection..."
+Set-MpPreference -DisableRealtimeMonitoring $true
+echo "Done!"
+echo ""
+
+# Verify it's off
+echo "Verifying..."
+Start-Sleep 2
+$newStatus = Get-MpComputerStatus
+echo "New status: $($newStatus.RealtimeProtectionEnabled)"
+echo ""
+
+if (-NOT $newStatus.RealtimeProtectionEnabled) {
+    echo "SUCCESS: Windows Defender is now DISABLED"
+    echo ""
+    echo "WARNING: Your computer is not protected!"
+    echo "Run this script again to re-enable when done."
+} else {
+    echo "FAILED: Could not disable Windows Defender"
 }
 
-# Turn OFF real-time protection
-Write-Host "`n[*] Disabling Windows Defender real-time protection..." -ForegroundColor Yellow
-try {
-    Set-MpPreference -DisableRealtimeMonitoring $true
-    Write-Host "[✓] Real-time protection DISABLED" -ForegroundColor Green
-} catch {
-    Write-Host "[✗] Failed to disable real-time protection: $($_.Exception.Message)" -ForegroundColor Red
-    exit 1
-}
-
-# Also disable other protections for better bypass
-Write-Host "[*] Disabling additional protections..." -ForegroundColor Yellow
-try {
-    Set-MpPreference -DisableBehaviorMonitoring $true -ErrorAction SilentlyContinue
-    Set-MpPreference -DisableBlockAtFirstSeen $true -ErrorAction SilentlyContinue
-    Set-MpPreference -DisableIOAVProtection $true -ErrorAction SilentlyContinue
-    Set-MpPreference -DisablePrivacyMode $true -ErrorAction SilentlyContinue
-    Set-MpPreference -DisableScriptScanning $true -ErrorAction SilentlyContinue
-    Write-Host "[✓] Additional protections disabled" -ForegroundColor Green
-} catch {
-    Write-Host "[!] Some additional settings could not be changed" -ForegroundColor Yellow
-}
-
-# Wait and verify
-Start-Sleep -Seconds 2
-
-# Check final status
-Write-Host "`n[*] Verifying new status..." -ForegroundColor Cyan
-try {
-    $finalStatus = Get-MpComputerStatus
-    Write-Host "Final Status:" -ForegroundColor Cyan
-    Write-Host "• Real-time protection: $($finalStatus.RealtimeProtectionEnabled)" -ForegroundColor $(if($finalStatus.RealtimeProtectionEnabled){"Red"}else{"Green"})
-    Write-Host "• Antivirus enabled: $($finalStatus.AntivirusEnabled)" -ForegroundColor Gray
-    
-    if (-not $finalStatus.RealtimeProtectionEnabled) {
-        Write-Host "`n[✓] SUCCESS: Windows Defender real-time protection is now OFF" -ForegroundColor Green
-        Write-Host "[!] WARNING: Your system is now vulnerable to threats!" -ForegroundColor Yellow
-        Write-Host "[*] Run this script again to re-enable protection when done." -ForegroundColor Cyan
-    } else {
-        Write-Host "`n[✗] FAILED: Real-time protection is still ON" -ForegroundColor Red
-    }
-} catch {
-    Write-Host "[!] Could not verify final status" -ForegroundColor Yellow
-}
-
-# Display commands to re-enable
-Write-Host "`n" + "="*50 -ForegroundColor DarkCyan
-Write-Host "QUICK COMMANDS:" -ForegroundColor Cyan
-Write-Host "="*50 -ForegroundColor DarkCyan
-Write-Host "To RE-ENABLE Defender:" -ForegroundColor Green
-Write-Host "Set-MpPreference -DisableRealtimeMonitoring `$false" -ForegroundColor Gray
-Write-Host "`nTo DISABLE again:" -ForegroundColor Yellow
-Write-Host "Set-MpPreference -DisableRealtimeMonitoring `$true" -ForegroundColor Gray
-Write-Host "="*50 -ForegroundColor DarkCyan
-
-Write-Host "`nPress any key to exit..." -ForegroundColor Gray
+echo ""
+echo "========================================"
+echo "Press any key to close..."
 $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
