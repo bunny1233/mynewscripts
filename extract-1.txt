@@ -340,7 +340,7 @@ function Send-TelegramFile {
         $boundary = [System.Guid]::NewGuid().ToString()
         $LF = "`r`n"
         
-        $bodyLines = (
+        $bodyLines = @(
             "--$boundary",
             "Content-Disposition: form-data; name=`"chat_id`"",
             "",
@@ -350,7 +350,7 @@ function Send-TelegramFile {
             "",
             $Caption,
             "--$boundary",
-            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`""
+            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
             "Content-Type: application/octet-stream",
             "",
             $fileContent,
